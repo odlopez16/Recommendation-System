@@ -1,2 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+env/
+venv/
 .env
 .venv
+*.egg-info/
+dist/
+build/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data files
+*.csv
+*.json
+*.pkl
+*.h5
+*.model
+*.bin
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Local development settings
+config.ini
+secrets.yaml
+credentials.json
+
+# Dependencies
+node_modules/
+bower_components/
+
+# Distribution / packaging
+.Python
+develop-eggs/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+.tox/
