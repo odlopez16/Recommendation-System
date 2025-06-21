@@ -9,6 +9,7 @@ venv/
 *.egg-info/
 dist/
 build/
+.pyc
 
 # IDEs and editors
 .idea/
