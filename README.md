@@ -11,11 +11,11 @@ Este proyecto es un sistema de recomendación de productos desarrollado con **Fa
 - **Persistencia** en PostgreSQL usando SQLAlchemy y Databases.
 - **Migraciones** con Alembic.
 - **Logging** centralizado y configurable.
-- **Configuración** por entorno usando `.env` y Pydantic Settings.
+- **Configuración** por entorno usando ".env" y Pydantic Settings.
 
 ## Estructura del proyecto
 
-```
+"""
 Recommendation-System/
 ├── alembic/                  # Migraciones de base de datos
 ├── api/
@@ -31,65 +31,65 @@ Recommendation-System/
 ├── .env                      # Variables de entorno
 ├── README.md                 # Este archivo
 └── ...
-```
+"""
 
 ## Instalación y configuración
 
 1. **Clona el repositorio y entra al directorio:**
-   ```bash
+   """bash
    git clone <repo_url>
    cd Recommendation-System
-   ```
+   """
 2. **Crea y activa un entorno virtual:**
-   ```bash
+   """bash
    python -m venv .venv
    source .venv/bin/activate  # En Windows: .venv\Scripts\activate
-   ```
+   """
 3. **Instala las dependencias:**
-   ```bash
+   """bash
    pip install -r api/requirements.txt
-   ```
-4. **Configura el archivo `.env`:**
+   """
+4. **Configura el archivo ".env":**
    - Ajusta las URLs de base de datos, claves y parámetros según tu entorno.
 
 5. **Aplica las migraciones:**
-   ```bash
+   """bash
    alembic upgrade head
-   ```
+   """
 
 ## Ejecución
 
-```bash
+"""bash
 uvicorn api.main:app --reload --host 127.0.0.1 --port 4000
-```
+"""
 
 La API estará disponible en: [http://127.0.0.1:4000/docs](http://127.0.0.1:4000/docs)
 
 ## Endpoints principales
 
 ### Autenticación
-- `POST /api/auth/register` — Registro de usuario
-- `POST /api/auth/login` — Login y obtención de JWT
-- `GET /api/auth/me` — Usuario autenticado actual (requiere JWT)
+- "POST /api/auth/register" — Registro de usuario
+- "POST /api/auth/login" — Login y obtención de JWT
+- "GET /api/auth/me" — Usuario autenticado actual (requiere JWT)
 
 ### Recomendaciones
-- `POST /api/embeddings/recommendation` — Obtener recomendación de productos (requiere JWT)
+- "POST /api/embeddings/recommendation" — Obtener recomendación de productos (requiere JWT)
 
 ## Seguridad
 - Usa JWT para proteger rutas sensibles.
-- El token debe enviarse en el header: `Authorization: Bearer <token>`
+- El token debe enviarse en el header: "Authorization: Bearer <token>"
 
-## Variables de entorno principales (`.env`)
-- `ENV_STATE` — Entorno actual (`dev`, `test`, `prod`)
-- `DEV_POSTGRES_URL_PRIMARY` — URL de la base de datos de embeddings y usuarios
-- `DEV_POSTGRES_URL_SECONDARY` — URL de la base de datos de productos
-- `JWT_SECRET_KEY`, `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` — Seguridad JWT
-- `OPENAI_MODEL`, `API_KEY`, `BASE_URL` — Configuración de embeddings
+## Variables de entorno principales (".env")
+- "ENV_STATE" — Entorno actual ("dev", "test", "prod")
+- "DEV_POSTGRES_URL_PRIMARY" — URL de la base de datos de embeddings y usuarios
+- "DEV_POSTGRES_URL_SECONDARY" — URL de la base de datos de productos
+- "JWT_SECRET_KEY", "ALGORITHM", "ACCESS_TOKEN_EXPIRE_MINUTES" — Seguridad JWT
+- "OPENAI_MODEL", "API_KEY", "BASE_URL" — Configuración de embeddings
 
 ## Migraciones y bases de datos
-- Las tablas `users_table` y `embeddings_table` se crean en la base de datos de embeddings.
-- La tabla `products_table` se crea en la base de datos de productos.
-- Revisa y ajusta los strings de conexión en `.env` según tu entorno.
+- Las tablas "users_table" y "embeddings_table" se crean en la base de datos de embeddings.
+- La tabla "products_table" se crea en la base de datos de productos.
+- Revisa y ajusta los strings de conexión en ".env" según tu entorno.
 
 ## Licencia
 MIT
