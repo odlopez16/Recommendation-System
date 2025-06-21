@@ -68,18 +68,22 @@ La API estará disponible en: [http://127.0.0.1:4000/docs](http://127.0.0.1:4000
 ## Endpoints principales
 
 ### Autenticación
+
 - "POST /api/auth/register" — Registro de usuario
 - "POST /api/auth/login" — Login y obtención de JWT
 - "GET /api/auth/me" — Usuario autenticado actual (requiere JWT)
 
 ### Recomendaciones
+
 - "POST /api/embeddings/recommendation" — Obtener recomendación de productos (requiere JWT)
 
 ## Seguridad
+
 - Usa JWT para proteger rutas sensibles.
-- El token debe enviarse en el header: "Authorization: Bearer <token>"
+- El token debe enviarse en el header: "Authorization: Bearer token"
 
 ## Variables de entorno principales (".env")
+
 - "ENV_STATE" — Entorno actual ("dev", "test", "prod")
 - "DEV_POSTGRES_URL_PRIMARY" — URL de la base de datos de embeddings y usuarios
 - "DEV_POSTGRES_URL_SECONDARY" — URL de la base de datos de productos
@@ -87,12 +91,10 @@ La API estará disponible en: [http://127.0.0.1:4000/docs](http://127.0.0.1:4000
 - "OPENAI_MODEL", "API_KEY", "BASE_URL" — Configuración de embeddings
 
 ## Migraciones y bases de datos
+
 - Las tablas "users_table" y "embeddings_table" se crean en la base de datos de embeddings.
 - La tabla "products_table" se crea en la base de datos de productos.
 - Revisa y ajusta los strings de conexión en ".env" según tu entorno.
-
-## Licencia
-MIT
 
 ---
 
