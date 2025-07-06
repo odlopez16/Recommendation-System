@@ -2,7 +2,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 import os
 from functools import lru_cache
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 
 class BaseConfig(BaseSettings):
     ENV_STATE: str
@@ -12,7 +15,10 @@ class BaseConfig(BaseSettings):
     OPENAI_MODEL: str
     JWT_SECRET_KEY: str
     ALGORITHM: str
-    ACCESS_TOKEN_EXPIRE_MINUTES: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+    REFRESH_SECRET_KEY: str
+    REFRESH_TOKEN_EXPIRE_MINUTES: int
+    MAX_SESSIONS_PER_USER: int = 5
 
     @property
     def POSTGRES_URL_PRIMARY(self) -> str:
@@ -21,7 +27,6 @@ class BaseConfig(BaseSettings):
     @property
     def POSTGRES_URL_SECONDARY(self) -> str:
         raise NotImplementedError
-
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -72,8 +77,13 @@ class ProdConfig(BaseConfig):
 
 @lru_cache
 def get_config() -> BaseConfig:
-    env_state: str = os.getenv("ENV_STATE", "dev").lower()
-
+    # Load environment variables again to ensure they're available
+    load_dotenv(override=True)
+    
+    env_state = os.getenv("ENV_STATE", "dev").lower()
+    if env_state not in ["dev", "test", "prod"]:
+        env_state = "dev"  # default to dev if invalid value
+        
     config_classes = {
         "dev": DevConfig,
         "test": TestConfig,

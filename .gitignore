@@ -30,9 +30,16 @@ build/
 *.bin
 
 # Logs and databases
+logs/
 *.log
 *.sqlite
 *.db
+
+# Local environment overrides
+*.local
+
+# Dependency caches
+.pdm-python
 
 # Local development settings
 config.ini
@@ -60,3 +67,9 @@ wheels/
 htmlcov/
 .coverage
 .tox/
+
+# Type checking
+.mypy_cache/
+
+# Database migrations
+/alembic.ini
