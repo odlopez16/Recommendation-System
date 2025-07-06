@@ -1,12 +1,8 @@
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
+from api.models.embedding_model import Embedding
 import logging
 from fastapi import APIRouter, HTTPException, status, Depends
 from api.services.llm_service import build_answer, client
 from api.services.embedding_service import EmbeddingProcessor, FaissManager
-from api.models.embedding_model import Embedding
 from api.models.products_model import Product
 from api.models.others import Description, Response
 from api.services.auth_service import get_current_user
@@ -35,7 +31,7 @@ async def recommender(
     text_embedded = np.array(await embed_processor.generate_embeddings(text=text))
 
     await embed_processor.save_embeddings()
-    embeddings_list = await embed_processor.get_embeddings_from_db()
+    embeddings_list: list[Embedding] = await embed_processor.get_embeddings_from_db()
     logger.info(f"Retrieved {len(embeddings_list)} embeddings from the database.😁")
 
     if not embeddings_list:
@@ -58,4 +54,7 @@ async def recommender(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate recommendation answer."
         )
-    return {"answer": answer}
+    return {
+            "answer": answer,
+            "products": recommended_products
+            }

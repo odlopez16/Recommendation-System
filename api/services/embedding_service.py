@@ -2,8 +2,7 @@ import sys
 from pathlib import Path
 from venv import logger
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-import faiss
+import faiss # type: ignore
 from typing import Any
 from sqlalchemy import Insert, Select
 from api.models.embedding_model import Embedding, EmbeddingIn
@@ -15,6 +14,7 @@ from api.database.database_config import secondary_database as prod_db
 import numpy as np
 from openai import OpenAI
 from api.services.preprocessing_service import TextPreprocessor
+from api.services.product_service import ProductProcessor
 from config import config
 import logging
 
@@ -41,12 +41,7 @@ class EmbeddingProcessor:
         Returns:
             list[Product]: List of Product objects.
         """
-        self.logger.debug("Fetching all products from the database.")
-        query: Select = products_table.select()
-        records = await prod_db.get_database().fetch_all(query=query)
-        products: list[Product] = [Product(**dict(record)) for record in records]
-        self.logger.info(f"Fetched {len(products)} products from the database.")
-        return products
+        return await ProductProcessor().get_products()
 
     async def generate_embeddings(self, text: str = "") -> list[float] | list[tuple[Any, list[float]]]:
         """
@@ -71,13 +66,13 @@ class EmbeddingProcessor:
                 self.logger.info(f"Generated embeddings for {len(embed_list)} products.")
                 return embed_list
             else:
-                embedding: list[float] = self.__openai_client.embeddings.create(
+                embed: list[float] = self.__openai_client.embeddings.create(
                     input=text_preprocessor.preprocess(text),
                     model=config.OPENAI_MODEL,
                     dimensions=self.__dimension
                 ).data[0].embedding
                 self.logger.info("Generated embedding for input text.")
-                return embedding
+                return embed
         except Exception as e:
             self.logger.error(f"Error generating embeddings: {e}")
             raise
@@ -103,7 +98,6 @@ class EmbeddingProcessor:
         """
         Generate and save embeddings for all products in the database.
         """
-        import numpy as np
         try:
             embeddings_generated: list[tuple[Any, list[float]]] = await self.generate_embeddings()  # type: ignore
             saved_count = 0

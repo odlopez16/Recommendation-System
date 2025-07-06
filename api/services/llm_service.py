@@ -33,7 +33,7 @@ def build_answer(user_query: str, recommended_products: list[Product]) -> str | 
         str | None: Natural language generated response or None if an error occurs.
     """
     products_list: str = "\n".join(
-        f"- {p.name}: {p.description}"
+        f"- {p.name}: {p.description} {p.price}"
         for p in recommended_products
     )
     sys_role = "You are an AI assistant specialized in product recommendations."
