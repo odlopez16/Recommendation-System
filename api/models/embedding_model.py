@@ -1,4 +1,5 @@
-from pydantic import BaseModel, UUID4
+from datetime import datetime, timezone
+from pydantic import BaseModel, UUID4, Field
 
 
 class EmbeddingIn(BaseModel):
@@ -19,6 +20,7 @@ class Embedding(BaseModel):
     id: UUID4
     product_id: UUID4
     embedding: list[float]
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         from_attributes = True

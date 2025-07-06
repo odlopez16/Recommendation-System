@@ -6,3 +6,4 @@ class Description(BaseModel):
 
 class Response(BaseModel):
     answer: str
+    products: list
