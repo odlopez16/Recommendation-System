@@ -16,4 +16,4 @@ async def get_products(current_user: UserInDB = Depends(get_current_user))-> lis
 
 @router.get("/{product_id}", response_model=Product, status_code=status.HTTP_200_OK)
 async def get_product_by_id(product_id: UUID, current_user: UserInDB = Depends(get_current_user))-> Product:
-    return await ProductProcessor().get_product_by_id(product_id)
+    return await ProductProcessor().get_product_by_id(product_id=product_id)

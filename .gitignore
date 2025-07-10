@@ -66,6 +66,8 @@ wheels/
 .pytest_cache/
 htmlcov/
 .coverage
+.coverage.*
+,cover/
 .tox/
 
 # Type checking
@@ -73,3 +75,37 @@ htmlcov/
 
 # Database migrations
 /alembic.ini
+alembic/
+alembic.ini
+
+# Virtual environments
+ENV/
+env/
+venv/
+.venv
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+.idea_modules/
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Project specific
+*.log.*
+!logs/.gitkeep

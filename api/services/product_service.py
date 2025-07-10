@@ -1,3 +1,4 @@
+from uuid import UUID
 from sqlalchemy import Select
 from api.models.products_model import Product
 from api.schemas.product_schema import products_table
@@ -21,7 +22,7 @@ class ProductProcessor:
         self.logger.info(f"Fetched {len(products)} products from the database.")
         return products
 
-    async def get_product_by_id(self, product_id: int)-> Product:
+    async def get_product_by_id(self, product_id: UUID)-> Product:
         self.logger.debug("Fetching product by id from the database.")
         query: Select = products_table.select().where(products_table.c.id == product_id)
         record = await prod_db.get_database().fetch_one(query)

@@ -7,12 +7,12 @@ from api.schemas.auth_schema import user_sessions_table as session_table
 
 from api.database.database_config import primary_database as db_p
 from api.models.user_session_model import UserSession, UserSessionCreate
-from api.config.settings import settings
+from config import config
 
 
 class SessionService:
     def __init__(self):
-        self.max_sessions_per_user = settings.MAX_SESSIONS_PER_USER
+        self.max_sessions_per_user = config.MAX_SESSIONS_PER_USER
 
     async def create_session(self, session_data: UserSessionCreate, refresh_token: Optional[str] = None) -> UserSession:
         """Create a new user session and manage session limits

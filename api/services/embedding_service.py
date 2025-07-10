@@ -174,9 +174,7 @@ class FaissManager:
         query: Select = products_table.select().where(products_table.c.id == prod_id)
         record = await prod_db.get_database().fetch_one(query)
         if record is None:
-            self.logger.error(f"Product with id {prod_id} not found in the database.")
-            raise ValueError(f"Product with id {prod_id} not found.")
-        self.logger.info(f"Fetched product with id {prod_id} from the database.")
+            raise ValueError(f"Product not found.")
         return Product(**dict(record))
 
     async def search(self, query: np.ndarray, k: int = 5) -> list[Product]:
@@ -185,7 +183,6 @@ class FaissManager:
             query = query.reshape(1, -1).astype(np.float32)
         indexes: np.ndarray = self.index.search(query, k)[1][0]  # type: ignore
         ind_list: list = indexes.tolist()
-        logger.info(f"Indexes from FAISS 😎: {ind_list}, Type: {type(ind_list)}")
         recommended_products: list[Product] = []
         for idx in ind_list:
             if idx < 0 or idx >= len(self.embed_list):
@@ -194,7 +191,6 @@ class FaissManager:
             try:
                 product_id = self.embed_list[idx].product_id
                 product = await self._get_product_by_id(product_id)
-                logger.info(f"🙌Product {idx}:{product}")
                 if product:
                     recommended_products.append(product)
                 else:

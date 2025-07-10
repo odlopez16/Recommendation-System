@@ -15,9 +15,10 @@ from jose import JWTError, jwt  # type: ignore
 from sqlalchemy import Insert, select, update, delete, and_, func
 
 from api.database.database_config import primary_database as db
-from api.models.auth_model import UserInDB, TokenData, Token
+from api.models.auth_model import UserInDB, TokenData, UserWithoutPassword, LoginResponse
 from api.models.user_session_model import UserSession, UserSessionCreate
 from api.schemas.auth_schema import users_table, user_sessions_table
+from api.exceptions.exceptions import not_found_exception, unauthorized_exception
 from config import config
 from logging_config import setup_logging
 from api.services.security_service import (
@@ -39,13 +40,12 @@ def verify_password(plain_password: str, hashed_password: str):
 def get_password_hash(password:str):
     return pwd_context.hash(password)
 
-async def get_user_by_email(email: str):
+async def get_user_by_email(email: str)-> UserInDB | None:
     query = users_table.select().where(users_table.c.email == email)
     record = await db.get_database().fetch_one(query)
     if record:
         return UserInDB(**dict(record))
-    logger.error(f"User with email {email} doesn't exist")
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= f"User with email {email} does'nt exist")
+    return None
 
 async def authenticate_user(email: str, password: str, request: Optional[Request] = None) -> UserInDB:
     """
@@ -63,35 +63,27 @@ async def authenticate_user(email: str, password: str, request: Optional[Request
         HTTPException: If authentication fails or user is inactive
     """
     # Check brute force protection
-    identifier = email
+    identifier: str = email
     if request:
-        client_ip = get_client_ip(request)
+        client_ip: str = get_client_ip(request)
         identifier = f"{email}:{client_ip}"
     
     check_brute_force(identifier)
     
     try:
-        user = await get_user_by_email(email)
+        user: UserInDB | None = await get_user_by_email(email)
         
         # Check if user exists and is active
         if not user or not user.is_active:
-            logger.warning(f"Authentication failed for user {email}: User not found or inactive")
+            logger.warning(f"Authentication failed for user. User not found or inactive")
             brute_force_protection.register_attempt(identifier, success=False)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise unauthorized_exception("Correo inválido")
             
         # Verify password
         if not verify_password(password, user.hashed_password):
-            logger.warning(f"Authentication failed for user {email}: Invalid password")
+            logger.warning(f"Authentication failed for user. Invalid password")
             brute_force_protection.register_attempt(identifier, success=False)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise unauthorized_exception("Contraseña inválida")
             
         # Successful authentication
         brute_force_protection.register_attempt(identifier, success=True)
@@ -101,7 +93,7 @@ async def authenticate_user(email: str, password: str, request: Optional[Request
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Unexpected error during authentication for {email}: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error during authentication", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred during authentication"
@@ -123,18 +115,32 @@ def create_access_token(data: TokenData):
     return encoded_jwt
 
 
-async def create_user(email: str, password: str):
-    hashed_password = get_password_hash(password)
-    insert_query: Insert = users_table.insert().values(
-        **dict(UserInDB(id=uuid.uuid4(),
+async def create_user(email: str, password: str)-> UserWithoutPassword | None:
+    try:
+        hashed_password = get_password_hash(password)
+        user: UserInDB | None = await get_user_by_email(email)
+        if user is not None:
+            raise not_found_exception("User already exists")
+        
+        insert_query: Insert = users_table.insert().values(
+            **dict(UserInDB(id=uuid.uuid4(),
                         email=email,
                         hashed_password=hashed_password,
                         is_active=True)
                 )
-    )
-    await db.get_database().execute(insert_query)
-    logger.info(f"User created with email {email}")
-    return await get_user_by_email(email)
+        )
+        await db.get_database().execute(insert_query)
+        new_user: UserInDB | None = await get_user_by_email(email)
+        if new_user is not None:
+            return UserWithoutPassword(
+                id=new_user.id,
+                email=new_user.email,
+                is_active=new_user.is_active
+            )
+        return None
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El email ya existe")
 
 async def get_token_from_cookie_or_header(request: Request) -> str | None:
     # Try to get token from Authorization header first
@@ -151,12 +157,7 @@ async def get_token_from_cookie_or_header(request: Request) -> str | None:
     return None
 
 async def get_current_user(request: Request) -> UserInDB:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
+    credentials_exception = unauthorized_exception("Credenciales inválidas")
     # Get token from either header or cookie
     token = await get_token_from_cookie_or_header(request)
     if not token:
@@ -168,11 +169,7 @@ async def get_current_user(request: Request) -> UserInDB:
         is_revoked = await token_service.is_token_revoked(token)
         if is_revoked:
             logger.warning("Se intentó usar un token revocado")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token ha sido revocado",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise unauthorized_exception("Token ha sido revocado")
             
         # Decode and validate token
         payload = jwt.decode(token, config.JWT_SECRET_KEY, algorithms=[config.ALGORITHM])
@@ -182,13 +179,13 @@ async def get_current_user(request: Request) -> UserInDB:
             raise credentials_exception
             
         # Get user from database
-        user: UserInDB = await get_user_by_email(email)
+        user: UserInDB | None = await get_user_by_email(email)
         if user is None:
-            logger.error(f"Usuario con email {email} no encontrado en la base de datos")
+            logger.error(f"Usuario no encontrado en la base de datos")
             raise credentials_exception
             
         if not user.is_active:
-            logger.warning(f"Intento de acceso de usuario inactivo: {email}")
+            logger.warning(f"Intento de acceso de usuario inactivo")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Esta cuenta ha sido desactivada",
@@ -197,12 +194,8 @@ async def get_current_user(request: Request) -> UserInDB:
         return user
             
     except JWTError as e:
-        logger.error(f"Error de JWT: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No se pudo validar el token de acceso",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        logger.error(f"Error de JWT")
+        raise unauthorized_exception("No se pudo validar el token de acceso")
     return user
 
 def create_refresh_token(data: dict, expires_delta: timedelta | None = None, session_id: Optional[uuid.UUID] = None) -> str:
@@ -217,8 +210,8 @@ def create_refresh_token(data: dict, expires_delta: timedelta | None = None, ses
     Returns:
         str: The encoded refresh token.
     """
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=int(config.REFRESH_TOKEN_EXPIRE_MINUTES)))
+    to_encode: dict = data.copy()
+    expire: datetime = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=int(config.REFRESH_TOKEN_EXPIRE_MINUTES)))
     to_encode.update({
         "exp": expire,
         "type": "refresh"
@@ -235,7 +228,7 @@ def create_refresh_token(data: dict, expires_delta: timedelta | None = None, ses
             algorithm=config.ALGORITHM
         )
     except Exception as e:
-        logger.error(f"Error creating refresh token: {str(e)}")
+        logger.error(f"Error creating refresh token")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating refresh token"
@@ -261,12 +254,7 @@ async def verify_refresh_token(refresh_token: str, session_service = None) -> di
         is_revoked = await token_service.is_token_revoked(refresh_token)
         if is_revoked:
             logger.warning("Se intentó usar un refresh token revocado")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token ha sido revocado",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            
+            raise unauthorized_exception("Refresh token ha sido revocado")
         # Decodificamos el token para obtener el payload
         payload = jwt.decode(
             refresh_token,
@@ -279,27 +267,17 @@ async def verify_refresh_token(refresh_token: str, session_service = None) -> di
             session = await session_service.get_session_by_refresh_token(refresh_token)
             if not session:
                 logger.warning("Refresh token no encontrado en la base de datos de sesiones activas")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Sesión inválida o expirada",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            
+                raise unauthorized_exception("Sesión inválida o expirada")
             # Actualizamos la última actividad de la sesión
             await session_service.update_session_activity(session.id)
-            
             # Añadimos el ID de sesión al payload si no está presente
             if "session_id" not in payload:
                 payload["session_id"] = str(session.id)
                 
         return payload
     except JWTError as e:
-        logger.error(f"Invalid refresh token: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        logger.error(f"Invalid refresh token")
+        raise unauthorized_exception("Invalid or expired refresh token")
 
 async def refresh_access_token(refresh_token: str, session_service = None, request = None):
     """
@@ -326,17 +304,11 @@ async def refresh_access_token(refresh_token: str, session_service = None, reque
         payload = await verify_refresh_token(refresh_token, session_service)
         email = payload.get("email")
         if not email:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
+            raise unauthorized_exception("Invalid token")
 
-        user = await get_user_by_email(email)
+        user: UserInDB | None = await get_user_by_email(email)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
-            )
+            raise unauthorized_exception("User not found")
 
         # Creamos el nuevo access token, incluyendo el session_id si está disponible
         session_id = payload.get("session_id")
@@ -355,7 +327,7 @@ async def refresh_access_token(refresh_token: str, session_service = None, reque
                 expires_at = datetime.now(timezone.utc) + timedelta(minutes=int(config.REFRESH_TOKEN_EXPIRE_MINUTES))
                 
                 # Creamos una nueva sesión con el mismo ID pero nuevo token
-                session_data = UserSessionCreate(
+                session_data: UserSessionCreate = UserSessionCreate(
                     user_id=user.id,
                     refresh_token="",  # Se actualizará después
                     expires_at=expires_at,
@@ -405,10 +377,10 @@ async def refresh_access_token(refresh_token: str, session_service = None, reque
                 session_id=UUID(session_id) if session_id else None
             )
 
-        return Token(
+        return LoginResponse(
             access_token=new_access_token,
             refresh_token=new_refresh_token,
-            token_type="bearer"
+            token_type="Bearer"
         )
         
     except HTTPException:

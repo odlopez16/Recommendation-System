@@ -12,7 +12,9 @@ from api.routers.embedding_router import router as embed_router
 from api.routers.products_router import router as products_router
 import logging
 from logging_config import setup_logging
-
+from api.services.auth_service import get_current_user
+from api.exceptions.exceptions import unauthorized_exception
+from fastapi import Request
 
 setup_logging()
 logger = logging.getLogger("api.main")

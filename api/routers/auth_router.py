@@ -10,7 +10,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt  # type: ignore
 from config import config
 from logging_config import setup_logging
-from api.models.auth_model import TokenData, UserCreate, Token, UserInDB
+from api.models.auth_model import TokenData, UserCreate, LoginResponse, UserInDB, UserWithoutPassword
 from api.models.user_session_model import UserSession, UserSessionCreate
 from api.exceptions.exceptions import unauthorized_exception
 from api.services.token_service import token_service
@@ -31,12 +31,14 @@ setup_logging()
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/register", response_model=UserInDB, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=UserWithoutPassword, status_code=status.HTTP_201_CREATED)
 async def register(user: UserCreate):
-    db_user: UserInDB = await create_user(user.email, user.password)
+    db_user: UserWithoutPassword | None = await create_user(user.email, user.password)
+    if not db_user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not created")
     return db_user
 
-@router.post("/login", response_model=Token, status_code=status.HTTP_200_OK)
+@router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 async def login(
     request: Request,
     response: Response, 
@@ -101,7 +103,7 @@ async def login(
         value=f"Bearer {access_token}",
         httponly=True,
         secure=config.ENV_STATE == "production",
-        samesite="lax",
+        samesite="strict",
         max_age=60 * int(config.ACCESS_TOKEN_EXPIRE_MINUTES),
         path="/"
     )
@@ -111,19 +113,19 @@ async def login(
         value=refresh_token,
         httponly=True,
         secure=config.ENV_STATE == "production",
-        samesite="lax",
+        samesite="strict",
         max_age=60 * int(config.REFRESH_TOKEN_EXPIRE_MINUTES),
-        path="/api/auth/refresh"
+        path="/"
     )
 
     # Devolver los tokens en la respuesta
-    return Token(
+    return LoginResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        token_type="bearer"
+        token_type="Bearer"
     )
 
-@router.post("/refresh_token", response_model=Token, status_code=status.HTTP_200_OK)
+@router.post("/refresh_token", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 async def refresh_token(
     request: Request, 
     response: Response,
@@ -175,7 +177,7 @@ async def refresh_token(
             raise unauthorized_exception("Token de refresco inválido")
         
         # Generar nuevos tokens, pasando el servicio de sesiones y la solicitud
-        tokens: Token = await refresh_tokens(refresh_token, session_service, request)
+        tokens: LoginResponse = await refresh_tokens(refresh_token, session_service, request)
         
         # Revocar el token de refresco anterior
         await token_service.revoke_token(refresh_token, user)
@@ -189,15 +191,15 @@ async def refresh_token(
             value=tokens.refresh_token,
             httponly=True,
             secure=config.ENV_STATE == "prod",
-            samesite="lax",
+            samesite="strict",
             max_age=60 * int(config.REFRESH_TOKEN_EXPIRE_MINUTES),
             path="/"
         )
         
-        return Token(
+        return LoginResponse(
             access_token=tokens.access_token,
             refresh_token="",  # No devolver el refresh token en el cuerpo
-            token_type="bearer"
+            token_type="Bearer"
         )
         
     except HTTPException:
@@ -280,14 +282,15 @@ async def logout(
         except Exception as e:
             logger.error(f"Error al cerrar sesión para {current_user.email}: {str(e)}")
     
-    response.delete_cookie(
-        key="refresh_token",
-        httponly = True,
-        secure = config.ENV_STATE == "production",
-        samesite = "lax",
-        path = "/",
-        domain=None
-    )
+    for cookie_name in ["access_token", "refresh_token"]:
+        response.delete_cookie(
+            key=cookie_name,
+            path="/",
+            domain=None,
+            secure=config.ENV_STATE == "production",
+            httponly=True,
+            samesite="strict"
+        )
     
     return None
     

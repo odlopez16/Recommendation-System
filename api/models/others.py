@@ -7,3 +7,4 @@ class Description(BaseModel):
 class Response(BaseModel):
     answer: str
     products: list
+    is_auth: bool

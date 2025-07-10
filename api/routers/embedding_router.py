@@ -1,6 +1,6 @@
 from api.models.embedding_model import Embedding
 import logging
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, Request, status, Depends
 from api.services.llm_service import build_answer, client
 from api.services.embedding_service import EmbeddingProcessor, FaissManager
 from api.models.products_model import Product
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 
 @router.post("/recommendation", response_model=Response, status_code=status.HTTP_200_OK)
 async def recommender(
+    request: Request,
     payload: Description,
     current_user: UserInDB = Depends(get_current_user)
 ):
@@ -54,7 +55,8 @@ async def recommender(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate recommendation answer."
         )
-    return {
-            "answer": answer,
-            "products": recommended_products
-            }
+    return Response(
+        answer=answer,
+        products=recommended_products,
+        is_auth=True if request.cookies.get("refresh_token") else False
+    )
