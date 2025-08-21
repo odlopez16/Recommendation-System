@@ -7,4 +7,6 @@ class Description(BaseModel):
 class Response(BaseModel):
     answer: str
     products: list
-    is_auth: bool
+
+class NumLikes(BaseModel):
+    num_likes: int

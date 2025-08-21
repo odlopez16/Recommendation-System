@@ -2,25 +2,26 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from jose import jwt # type: ignore
+from databases import Database
+from jose import jwt
 from sqlalchemy import Insert, Select, Delete
 from fastapi import HTTPException, status
 
 from api.database.database_config import primary_database as db
-from api.models.revoked_token_model import RevokedToken
+from api.models.revoked_token_model import RevokedTokenCreate
 from api.schemas.auth_schema import revoked_tokens_table
-from api.models.auth_model import UserInDB
+from api.models.auth_model import UserInDB, UserWithoutPassword
 
 logger = logging.getLogger("api.services.token_service")
 
 class TokenService:
     def __init__(self):
-        self.db = db.get_database()
+        self.db: Database = db.get_database()
 
     async def revoke_token(
         self, 
         token: str, 
-        user: UserInDB,
+        user: UserInDB | UserWithoutPassword,
         expires_at: Optional[datetime] = None
     ) -> None:
         """
@@ -37,24 +38,22 @@ class TokenService:
                 payload = jwt.get_unverified_claims(token)
                 expires_at = datetime.fromtimestamp(payload["exp"])
             except Exception as e:
-                logger.warning(f"No se pudo obtener la expiración del token: {e}")
+                logger.warning(f"No se pudo obtener la expiración del token")
                 expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
 
-        revoked_token = RevokedToken(
+        revoked_token = RevokedTokenCreate(
             token=token,
-            expires_at=expires_at,
             user_id=user.id
         )
 
         try:
             query: Insert = revoked_tokens_table.insert().values(
-                id=revoked_token.id,
                 token=revoked_token.token,
-                revoked_at=revoked_token.revoked_at,
                 expires_at=revoked_token.expires_at,
                 user_id=revoked_token.user_id
             )
             await self.db.execute(query)
+            
             logger.info(f"Token revocado para el usuario {user.email}")
         except Exception as e:
             logger.error(f"Error al revocar el token: {e}")
@@ -80,7 +79,7 @@ class TokenService:
             result = await self.db.fetch_one(query)
             return result is not None
         except Exception as e:
-            logger.error(f"Error al verificar token revocado: {e}")
+            logger.error(f"Error al verificar token revocado")
             return False
 
     async def cleanup_expired_tokens(self) -> None:
@@ -94,7 +93,7 @@ class TokenService:
             await self.db.execute(query)
             logger.info("Tokens expirados limpiados")
         except Exception as e:
-            logger.error(f"Error al limpiar tokens expirados: {e}")
+            logger.error(f"Error al limpiar tokens expirados")
 
 # Instancia global para usar en toda la aplicación
 token_service = TokenService()

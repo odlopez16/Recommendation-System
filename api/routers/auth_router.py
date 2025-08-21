@@ -7,15 +7,15 @@ from typing import Any
 from datetime import timedelta, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Cookie
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import jwt  # type: ignore
+from jose import jwt
 from config import config
 from logging_config import setup_logging
-from api.models.auth_model import TokenData, UserCreate, LoginResponse, UserInDB, UserWithoutPassword
+from api.models.auth_model import TokenData, UserCreate, LoginResponse, UserWithoutPassword
 from api.models.user_session_model import UserSession, UserSessionCreate
 from api.exceptions.exceptions import unauthorized_exception
-from api.services.token_service import token_service
-from api.services.session_service import SessionService
-from api.services.auth_service import (
+from api.services.auth.token_service import token_service
+from api.services.auth.session_service import SessionService
+from api.services.auth.auth_service import (
     authenticate_user, 
     create_access_token, 
     create_refresh_token,
@@ -33,12 +33,16 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserWithoutPassword, status_code=status.HTTP_201_CREATED)
 async def register(user: UserCreate):
-    db_user: UserWithoutPassword | None = await create_user(user.email, user.password)
-    if not db_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not created")
-    return db_user
+    try:
+        db_user: UserWithoutPassword = await create_user(user.email, user.password)
+        if not db_user:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not created")
+        return db_user
+    except Exception as e:
+        logger.error(f"Error in register endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-@router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+@router.post("/login", response_model=UserWithoutPassword, status_code=status.HTTP_200_OK)
 async def login(
     request: Request,
     response: Response, 
@@ -46,7 +50,7 @@ async def login(
     session_service: SessionService = Depends()
 ):
     try:
-        db_user: UserInDB = await authenticate_user(
+        db_user: UserWithoutPassword = await authenticate_user(
             email=form_data.username,
             password=form_data.password,
             request=request
@@ -79,7 +83,7 @@ async def login(
         )
         
         # Crear la sesión en la base de datos
-        session = await session_service.create_session(session_data, refresh_token=refresh_token)
+        session: UserSession = await session_service.create_session(session_data, refresh_token=refresh_token)
         
         # Crear access token con el ID de sesión
         access_token = create_access_token(
@@ -118,12 +122,12 @@ async def login(
         path="/"
     )
 
-    # Devolver los tokens en la respuesta
-    return LoginResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="Bearer"
-    )
+    return db_user
+    # LoginResponse(
+    #     access_token=access_token,
+    #     refresh_token=refresh_token,
+    #     token_type="Bearer"
+    # )
 
 @router.post("/refresh_token", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 async def refresh_token(
@@ -213,14 +217,14 @@ async def refresh_token(
             detail="Error al refrescar el token"
         )
 
-@router.get("/me", response_model=UserInDB, status_code=status.HTTP_200_OK)
-async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
+@router.get("/me", response_model=UserWithoutPassword, status_code=status.HTTP_200_OK)
+async def read_users_me(current_user: UserWithoutPassword = Depends(get_current_user)):
     return current_user
 
 
 @router.get("/sessions", status_code=status.HTTP_200_OK)
 async def get_active_sessions(
-    current_user: UserInDB = Depends(get_current_user),
+    current_user: UserWithoutPassword = Depends(get_current_user),
     session_service: SessionService = Depends()
 ):
     """
@@ -257,7 +261,7 @@ async def get_active_sessions(
 async def logout(
     request: Request,
     response: Response,
-    current_user: UserInDB = Depends(get_current_user),
+    current_user: UserWithoutPassword = Depends(get_current_user),
     session_service: SessionService = Depends()
 ):
     """
@@ -292,5 +296,5 @@ async def logout(
             samesite="strict"
         )
     
-    return None
+        return None
     

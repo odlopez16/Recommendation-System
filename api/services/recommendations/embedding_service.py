@@ -1,23 +1,26 @@
 import sys
 from pathlib import Path
-from venv import logger
+
+from pydantic import UUID4
+from api.models.user_interaction_model import UserProductInteractionInDB
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-import faiss # type: ignore
+import faiss #type: ignore
 from typing import Any
-from sqlalchemy import Insert, Select
+from sqlalchemy import Insert, Select, desc, func
 from api.models.embedding_model import Embedding, EmbeddingIn
 from api.models.products_model import Product
 from api.schemas.embedding_schema import embeddings_table
 from api.schemas.product_schema import products_table
-from api.database.database_config import primary_database as embed_db
-from api.database.database_config import secondary_database as prod_db
+from api.database.database_config import primary_database as db
+from api.schemas.user_interaction_schema import user_interactions_table
+from api.services.recommendations.like_service import like_service
+from api.models.auth_model import UserWithoutPassword
 import numpy as np
 from openai import OpenAI
-from api.services.preprocessing_service import TextPreprocessor
-from api.services.product_service import ProductProcessor
+from api.services.recommendations.preprocessing_service import TextPreprocessor
+from api.services.recommendations.product_service import product_processor
 from config import config
 import logging
-
 
 
 class EmbeddingProcessor:
@@ -34,27 +37,21 @@ class EmbeddingProcessor:
         """
         self.__openai_client = openai_client
         self.__dimension = dimension
+        self.__like_service = like_service
 
-    async def _get_products_from_db(self) -> list[Product]:
-        """
-        Retrieve all products from the database.
-        Returns:
-            list[Product]: List of Product objects.
-        """
-        return await ProductProcessor().get_products()
-
-    async def generate_embeddings(self, text: str = "") -> list[float] | list[tuple[Any, list[float]]]:
+    async def generate_embeddings(self, text: str = "", products: list[Product] = []) -> list[tuple[Any, list[float]]] | Any:
         """
         Generate embeddings for a given text or for all products if text is empty.
         Args:
             text (str): The input text. If empty, generate for all products.
+            products (list[Product]): List of products to generate embeddings for.
         Returns:
             list[float] | list[tuple[Any, list[float]]]: Embedding(s) generated.
         """
         text_preprocessor = TextPreprocessor()
         try:
             if text == "":
-                products: list[Product] = await self._get_products_from_db()
+                products = await product_processor.get_products_from_primary_db()
                 embed_list: list[tuple[Any, list[float]]] = []
                 for prod in products:
                     embedding: list[float] = self.__openai_client.embeddings.create(
@@ -77,7 +74,7 @@ class EmbeddingProcessor:
             self.logger.error(f"Error generating embeddings: {e}")
             raise
 
-    async def _get_embedding_by_prod_id(self, product_id: Any) -> Embedding:
+    async def _get_embedding_by_prod_id(self, product_id: Any) -> Embedding | None:
         """
         Retrieve an embedding from the database by product ID.
         Args:
@@ -87,7 +84,8 @@ class EmbeddingProcessor:
         """
         self.logger.debug(f"Fetching embedding for product_id: {product_id}")
         query: Select = embeddings_table.select().where(embeddings_table.c.product_id == product_id)
-        embedding: Embedding = await embed_db.get_database().fetch_one(query)  # type: ignore
+        record = await db.get_database().fetch_one(query)
+        embedding: Embedding | None = Embedding(**dict(record)) if record is not None else None
         if embedding:
             self.logger.info(f"Found embedding for product_id: {product_id}")
         else:
@@ -108,38 +106,93 @@ class EmbeddingProcessor:
                 embedding_bytes = np.array(pair[1], dtype=np.float32).tobytes()
                 query: Insert = embeddings_table.insert().values(dict(EmbeddingIn(
                     product_id=pair[0], embedding=embedding_bytes)))
-                await embed_db.get_database().execute(query)
+                await db.get_database().execute(query)
                 saved_count += 1
-            self.logger.info(f"Saved {saved_count} new embeddings to the database.")
+            self.logger.info(f"Saved new embeddings to the database.")
         except Exception as e:
-            self.logger.error(f"Error saving embeddings: {e}")
+            self.logger.error(f"Error saving embeddings")
             raise
 
-    async def get_embeddings_from_db(self) -> list[Embedding]:
+    async def get_embeddings_from_db(self) -> list[Embedding] | Any:
         """
         Retrieve all embeddings from the database and convert them to list[float].
         Returns:
             list[Embedding]: List of Embedding objects.
         """
-        import numpy as np
         try:
             query: Select = embeddings_table.select()
-            records = await embed_db.get_database().fetch_all(query)
-            embeddings: list[Embedding] = []
-            for record in records:
-                # Convert bytes back to list[float]
-                embedding: list[float] = np.frombuffer(record["embedding"], dtype=np.float32).tolist()
-                embeddings.append(Embedding(
-                    id=record["id"],
-                    product_id=record["product_id"],
-                    embedding=embedding
-                ))
-            self.logger.info(f"Fetched {len(embeddings)} embeddings from the database.")
+            records = await db.get_database().fetch_all(query)
+            embeddings: list[Embedding] = [Embedding(
+                id=record["id"],
+                product_id=record["product_id"],
+                embedding=np.frombuffer(record["embedding"], dtype=np.float32).tolist(),
+                created_at=record["created_at"]
+            ) for record in records]
+            
+            self.logger.info(f"Fetched embeddings from the database.")
             return embeddings
         except Exception as e:
-            self.logger.error(f"Error fetching embeddings from database: {e}")
-            raise
+            self.logger.error(f"Error fetching embeddings from database")
+            return []
 
+    def get_embeddings_average(self, embed_list: list[list[float]]) -> np.ndarray | Any:
+        """
+        Calculate the average of a list of embeddings.
+        Args:
+            embed_list (list[Embedding]): List of Embedding objects.
+        Returns:
+            np.ndarray[Float32DType, Any] | []: The average of the embeddings.
+        """
+        if not embed_list:
+            return []
+
+        average_embedding = [sum([embed_list[i][j] 
+        for i in range(len(embed_list))]) / len(embed_list) 
+        for j in range(self.__dimension)]
+        return np.array(average_embedding, dtype=np.float32)
+
+    @staticmethod
+    async def get_popular_products(limit: int = 5) -> list[Product]:
+        """Get most popular products based on like count"""
+
+        try:
+            query_popular_products: Select = products_table.select().join(
+                user_interactions_table,
+                products_table.c.id == user_interactions_table.c.product_id
+            ).where(user_interactions_table.c.liked == True).group_by(products_table.c.id).order_by(desc(func.count(user_interactions_table.c.product_id))).limit(limit)
+                
+            result = await db.get_database().fetch_all(query=query_popular_products)
+            return [Product(**dict(product)) for product in result]
+                
+        except Exception as e:
+            logging.getLogger("api.helpers.embedding.EmbeddingProcessor").error(f"Error in get_popular_products: {e}")
+            # Final fallback: return any products
+            return []
+
+    async def get_liked_products_per_user(self, user_id: UUID4)-> list[Product] | Any:
+        user_liked_interactions: list[UserProductInteractionInDB] = await self.__like_service.get_user_likes(user_id)
+
+        recommended_products: list[Product | None] = []
+        for interaction in user_liked_interactions:
+            query: Select = products_table.select().where(products_table.c.id == interaction.product_id)
+            result = await db.get_database().fetch_one(query)
+            product: Product | None = Product(**dict(result)) if result is not None else None
+            recommended_products.append(product)
+        return recommended_products if recommended_products else []
+
+    async def get_recommended_products_per_user(self, user: UserWithoutPassword, embeddings_list: list[Embedding])-> list[Product] | Any:
+        liked_products: list[Product] | Any = await self.get_liked_products_per_user(user.id)
+        if not liked_products:
+            return []
+        
+        data_generated: list[tuple[Any, list[float]]] = await self.generate_embeddings(products=liked_products) # type: ignore
+        embeddings: list[list[float]] = [pair[1] for pair in data_generated]
+        average: np.ndarray | Any = self.get_embeddings_average(embeddings)
+        
+        faiss_manager: FaissManager = FaissManager(embeddings_list)
+        faiss_manager.update_index()
+        products_list: list[Product] = await faiss_manager.search(average)
+        return products_list
 
 
 class FaissManager:
@@ -156,26 +209,17 @@ class FaissManager:
         self.embed_list = embed_list
         self.embeddings: np.ndarray = np.array([e.embedding for e in embed_list])
         self.index = faiss.IndexFlatL2(dimension)
-        self.logger.info(f"Initialized FAISS index with dimension {dimension}.")
+        self.logger.info(f"Initialized FAISS index.")
 
-    def update_index(self, ) -> None:
+    def update_index(self) -> None:
         """
         Add new embeddings to the FAISS index.
-        Args:
-            embeddings (np.ndarray): Embeddings to add.
         """
         if not self.index.is_trained:
             self.logger.debug("Training FAISS index.")
             self.index.train(self.embeddings.astype(np.float32))  # type: ignore
         self.index.add(self.embeddings.astype(np.float32))  # type: ignore
-        self.logger.info(f"Added {self.embeddings.shape[0]} embeddings to FAISS index.")
-
-    async def _get_product_by_id(self, prod_id: Any) -> Product:
-        query: Select = products_table.select().where(products_table.c.id == prod_id)
-        record = await prod_db.get_database().fetch_one(query)
-        if record is None:
-            raise ValueError(f"Product not found.")
-        return Product(**dict(record))
+        self.logger.info(f"Added embeddings to FAISS index.")
 
     async def search(self, query: np.ndarray, k: int = 5) -> list[Product]:
         self.logger.debug(f"Searching FAISS index for top {k} results.")
@@ -186,16 +230,16 @@ class FaissManager:
         recommended_products: list[Product] = []
         for idx in ind_list:
             if idx < 0 or idx >= len(self.embed_list):
-                self.logger.error(f"Invalid index from FAISS: {idx}")
+                self.logger.error(f"Invalid index from FAISS")
                 continue
             try:
                 product_id = self.embed_list[idx].product_id
-                product = await self._get_product_by_id(product_id)
+                product: Product = await product_processor.get_product_by_id(product_id)
                 if product:
                     recommended_products.append(product)
                 else:
-                    self.logger.error(f"Product not found or invalid for index {idx} and product_id     {product_id}")
+                    self.logger.error(f"Product not found or invalid for index")
             except Exception as e:
-                self.logger.error(f"Error fetching product for index {idx}: {e}")
+                self.logger.error(f"Error fetching product")
                 continue
         return recommended_products

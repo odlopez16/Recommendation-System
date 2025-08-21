@@ -10,23 +10,23 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from passlib.context import CryptContext  # type: ignore
-from jose import JWTError, jwt  # type: ignore
+from passlib.context import CryptContext #type: ignore
+from jose import JWTError, jwt
 from sqlalchemy import Insert, select, update, delete, and_, func
 
 from api.database.database_config import primary_database as db
-from api.models.auth_model import UserInDB, TokenData, UserWithoutPassword, LoginResponse
+from api.models.auth_model import UserCreate, UserInDB, TokenData, UserWithoutPassword, LoginResponse
 from api.models.user_session_model import UserSession, UserSessionCreate
 from api.schemas.auth_schema import users_table, user_sessions_table
 from api.exceptions.exceptions import not_found_exception, unauthorized_exception
 from config import config
 from logging_config import setup_logging
-from api.services.security_service import (
+from api.services.auth.security_service import (
     brute_force_protection,
     check_brute_force,
     get_client_ip
 )
-from api.services.token_service import token_service
+from api.services.auth.token_service import token_service
 
 setup_logging()
 
@@ -40,14 +40,17 @@ def verify_password(plain_password: str, hashed_password: str):
 def get_password_hash(password:str):
     return pwd_context.hash(password)
 
-async def get_user_by_email(email: str)-> UserInDB | None:
+async def get_user_by_email(email: str) -> UserInDB | None:
     query = users_table.select().where(users_table.c.email == email)
     record = await db.get_database().fetch_one(query)
     if record:
-        return UserInDB(**dict(record))
+        # Ensure is_active is a boolean
+        user_data = dict(record)
+        user_data['is_active'] = bool(user_data.get('is_active', True))
+        return UserInDB(**user_data)
     return None
 
-async def authenticate_user(email: str, password: str, request: Optional[Request] = None) -> UserInDB:
+async def authenticate_user(email: str, password: str, request: Optional[Request] = None) -> UserWithoutPassword:
     """
     Authenticate a user with email and password.
     
@@ -87,7 +90,12 @@ async def authenticate_user(email: str, password: str, request: Optional[Request
             
         # Successful authentication
         brute_force_protection.register_attempt(identifier, success=True)
-        return user
+        return UserWithoutPassword(
+            id=user.id,
+            email=user.email,
+            is_active=user.is_active,
+            created_at=user.created_at
+        )
         
     except HTTPException:
         # Re-raise HTTP exceptions
@@ -115,32 +123,39 @@ def create_access_token(data: TokenData):
     return encoded_jwt
 
 
-async def create_user(email: str, password: str)-> UserWithoutPassword | None:
+async def create_user(email: str, password: str) -> UserWithoutPassword:
     try:
-        hashed_password = get_password_hash(password)
-        user: UserInDB | None = await get_user_by_email(email)
-        if user is not None:
-            raise not_found_exception("User already exists")
+        # Verificar si el usuario ya existe
+        existing_user = await get_user_by_email(email)
+        logger.info(f"Checking existing user: {existing_user}")
+        if existing_user is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
         
-        insert_query: Insert = users_table.insert().values(
-            **dict(UserInDB(id=uuid.uuid4(),
-                        email=email,
-                        hashed_password=hashed_password,
-                        is_active=True)
-                )
-        )
+        # Hashear la contraseña
+        hashed_password = get_password_hash(password)
+        
+        # Crear el diccionario de datos para la inserción
+        user_data = {
+            "email": email,
+            "hashed_password": hashed_password,
+            "is_active": True
+        }
+        
+        # Insertar el nuevo usuario
+        insert_query = users_table.insert().values(**user_data)
         await db.get_database().execute(insert_query)
         new_user: UserInDB | None = await get_user_by_email(email)
-        if new_user is not None:
+        if new_user != None:
             return UserWithoutPassword(
                 id=new_user.id,
                 email=new_user.email,
-                is_active=new_user.is_active
+                is_active=new_user.is_active,
+                created_at=new_user.created_at
             )
-        return None
+        raise not_found_exception("User not found😢")
     except Exception as e:
         logger.error(f"Error creating user: {e}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El email ya existe")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error creating user")
 
 async def get_token_from_cookie_or_header(request: Request) -> str | None:
     # Try to get token from Authorization header first
@@ -156,7 +171,7 @@ async def get_token_from_cookie_or_header(request: Request) -> str | None:
             
     return None
 
-async def get_current_user(request: Request) -> UserInDB:
+async def get_current_user(request: Request) -> UserWithoutPassword:
     credentials_exception = unauthorized_exception("Credenciales inválidas")
     # Get token from either header or cookie
     token = await get_token_from_cookie_or_header(request)
@@ -191,7 +206,12 @@ async def get_current_user(request: Request) -> UserInDB:
                 detail="Esta cuenta ha sido desactivada",
             )
             
-        return user
+        return UserWithoutPassword(
+            id=user.id,
+            email=user.email,
+            is_active=user.is_active,
+            created_at=user.created_at
+        )
             
     except JWTError as e:
         logger.error(f"Error de JWT")

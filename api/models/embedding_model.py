@@ -18,9 +18,9 @@ class Embedding(BaseModel):
     The embedding is returned as a list of floats.
     """
     id: UUID4
-    product_id: UUID4
     embedding: list[float]
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime
+    product_id: UUID4
 
     class Config:
         from_attributes = True

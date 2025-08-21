@@ -1,20 +1,26 @@
+from os import close
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 from api.database.database_config import initialize_databases, close_databases
 from api.routers.auth_router import router as auth_router
 from api.routers.embedding_router import router as embed_router
 from api.routers.products_router import router as products_router
+from api.routers.likes_router import router as likes_router
+# Importar middlewares
+from api.middleware.rate_limiter import RateLimiter
+import asyncio
+from api.middleware.request_validator import RequestValidator
 import logging
 from logging_config import setup_logging
-from api.services.auth_service import get_current_user
-from api.exceptions.exceptions import unauthorized_exception
-from fastapi import Request
+
 
 setup_logging()
 logger = logging.getLogger("api.main")
@@ -27,47 +33,89 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Starting up application and initializing databases...")
     try:
-        await initialize_databases()
-        logger.info("Databases initialized successfully.")
+        # Intentar inicializar la base de datos con reintentos
+        max_retries = 3
+        retry_delay = 2  # segundos
+        for attempt in range(max_retries):
+            try:
+                await initialize_databases()
+                logger.info("Databases initialized successfully.")
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to initialize databases after {max_retries} attempts")
+                    raise
+                logger.warning(f"Attempt {attempt + 1} failed: {str(e)}. Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+        
         yield
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
+        logger.error(f"Error during startup: {str(e)}")
         raise
     finally:
         logger.info("Shutting down application and closing databases...")
-        await close_databases()
-        logger.info("Databases closed successfully.")
+        try:
+            await close_databases()
+            logger.info("Databases closed successfully.")
+        except Exception as e:
+            logger.error(f"Error closing databases: {str(e)}")
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Recommendation System API",
+    description="API para sistema de recomendaciones",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",  # Mover Swagger a /api/docs
+    redoc_url="/api/redoc",  # Mover ReDoc a /api/redoc
+    openapi_url="/api/openapi.json"  # Mover OpenAPI schema
+)
 
-# Configuración CORS segura
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
+
+app.middleware("http")(RateLimiter(requests_per_minute=60))
+app.middleware("http")(RequestValidator())
+
+
 origins = [
     "http://localhost:3000",
     "http://localhost:4000",
     "http://localhost:3001",
-    # Agrega aquí los dominios de producción cuando los tengas
 ]
 
-# Middleware para manejar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["Content-Type", "Set-Cookie", "Authorization"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "Origin",
+        "X-Requested-With"
+    ],
+    expose_headers=["Content-Type", "Authorization"],
     max_age=3600,
 )
 
+# Configuración de versiones de API
+API_V1_PREFIX = "/api/v1"
 
+# Agregar routers con prefijo de versión
+app.include_router(embed_router, prefix=API_V1_PREFIX)
+app.include_router(auth_router, prefix=API_V1_PREFIX)
+app.include_router(products_router, prefix=API_V1_PREFIX)
+app.include_router(likes_router, prefix=API_V1_PREFIX)
 
-app.include_router(embed_router, prefix="/api")
-app.include_router(auth_router, prefix="/api")
-app.include_router(products_router, prefix="/api")
+# Endpoint para verificar versión de API
+@app.get("/api/version")
+async def get_api_version():
+    return {"version": "1.0.0", "status": "stable"}
 
 @app.get("/home")
 async def home():
-    return {"message": "Welcome to the API"}
+    return {"message": "Welcome to the API ⚡"}
 
 
 if __name__ == "__main__":

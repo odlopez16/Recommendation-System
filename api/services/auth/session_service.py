@@ -2,10 +2,12 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
+from api.exceptions.exceptions import not_found_exception
 from sqlalchemy import Insert, Select, Update, Delete, func, select
+
 from api.schemas.auth_schema import user_sessions_table as session_table
 
-from api.database.database_config import primary_database as db_p
+from api.database.database_config import primary_database as db
 from api.models.user_session_model import UserSession, UserSessionCreate
 from config import config
 
@@ -28,28 +30,16 @@ class SessionService:
         session_dict = dict(session_data)
         if refresh_token is not None:
             session_dict['refresh_token'] = refresh_token
-            
-        new_session = UserSession(
-            **session_dict,
-            created_at=datetime.now(timezone.utc),
-            last_activity=datetime.now(timezone.utc)
-        )
         
-        query: Insert = session_table.insert().values(
-            id=new_session.id,
-            user_id=new_session.user_id,
-            refresh_token=new_session.refresh_token,
-            user_agent=new_session.user_agent,
-            ip_address=new_session.ip_address,
-            created_at=new_session.created_at,
-            last_activity=new_session.last_activity,
-            expires_at=new_session.expires_at,
-            is_active=new_session.is_active
-        )
         
-        await db_p.get_database().execute(query)
         
-        return new_session
+        query: Insert = session_table.insert().values(**session_dict)
+        await db.get_database().execute(query)
+
+        new_session: Optional[UserSession] = await self.get_session_by_refresh_token(session_dict['refresh_token'])
+        if new_session:
+            return new_session
+        raise not_found_exception(detail="Session not found")
 
     async def get_session_by_refresh_token(self, refresh_token: str) -> Optional[UserSession]:
         """Get a session by its refresh token"""
@@ -60,10 +50,10 @@ class SessionService:
         )
         
         # Use fetch_one() instead of execute() with fetchone()
-        session_data = await db_p.get_database().fetch_one(query)
+        session_data = await db.get_database().fetch_one(query)
         
         if not session_data:
-            return None 
+            return None
         return UserSession(**dict(session_data))
 
     async def update_session_activity(self, session_id: UUID) -> None:
@@ -73,7 +63,7 @@ class SessionService:
         ).values(
             last_activity=datetime.now(timezone.utc)
         )
-        await db_p.get_database().execute(query)
+        await db.get_database().execute(query)
 
     async def deactivate_session(self, refresh_token: str) -> bool:
         """Deactivate a session by its refresh token"""
@@ -88,7 +78,7 @@ class SessionService:
         
         try:
             # Execute the update and get the number of affected rows
-            result = await db_p.get_database().execute(query)
+            result = await db.get_database().execute(query)
             # For some database backends, we might need to check the result differently
             # This is a more reliable way to check if the update was successful
             return True
@@ -110,7 +100,7 @@ class SessionService:
         
         try:
             # Execute the update
-            await db_p.get_database().execute(query)
+            await db.get_database().execute(query)
             
             # Since we can't easily get the row count, we'll return a positive number
             # to indicate success. The exact count isn't critical for the calling code.
@@ -127,7 +117,7 @@ class SessionService:
             )
             
             # Execute the delete operation
-            await db_p.get_database().execute(query)
+            await db.get_database().execute(query)
             
             # Since we can't easily get the row count, we'll return a positive number
             # to indicate success. The exact count isn't critical for the calling code.
@@ -145,7 +135,7 @@ class SessionService:
             session_table.c.expires_at > datetime.now(timezone.utc)
         )
         
-        result = await db_p.get_database().fetch_val(query)
+        result = await db.get_database().fetch_val(query)
         return result or 0
 
     async def get_user_active_sessions(self, user_id: UUID) -> List[UserSession]:
@@ -157,7 +147,7 @@ class SessionService:
         ).order_by(session_table.c.last_activity.desc())
         
         # Use fetch_all() instead of execute() with fetchall()
-        sessions_data = await db_p.get_database().fetch_all(query)
+        sessions_data = await db.get_database().fetch_all(query)
         
         return [UserSession(**dict(session)) for session in sessions_data]
 

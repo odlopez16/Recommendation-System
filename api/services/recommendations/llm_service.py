@@ -58,10 +58,10 @@ def build_answer(user_query: str, recommended_products: list[Product]) -> str | 
         )
         return response.choices[0].message.content
     except RateLimitError as e:
-        logger.warning(f"Rate limit reached: {e}")
+        logger.warning("Rate limit reached")
         raise  # Will be retried by tenacity
     except APIError as e:
-        logger.error(f"OpenAI API error: {e}")
+        logger.error("OpenAI API error")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error("Unexpected error")
     return None

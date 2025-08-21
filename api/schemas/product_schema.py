@@ -15,5 +15,6 @@ products_table = Table(
     Column('price', FLOAT, nullable=False),
     Column('description', TEXT, nullable=True),
     Column('image', TEXT, nullable=True),
-    Column('created_at', DATE, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    Column('created_at', DATE, nullable=False, server_default=text('CURRENT_TIMESTAMP')),
+    Column('category', VARCHAR(255), nullable=False)
 )
