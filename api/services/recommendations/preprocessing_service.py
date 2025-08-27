@@ -1,109 +1,111 @@
-from typing import Any
+from typing import Any, Optional
 from functools import lru_cache
 import logging
 import spacy
-import langid # type: ignore
-import psutil # type: ignore
+import langid
+import psutil
+import threading
 
+# Lazy loading de modelos para reducir tiempo de inicio
+_models_cache: dict[str, Any] = {}
+_models_lock = threading.Lock()
 
-MODELS: dict[str, Any] = {
-    'en': spacy.load('en_core_web_sm'),  
-    'es': spacy.load('es_core_news_sm')  
-}
+def get_spacy_model(language: str) -> Any:
+    """Lazy loading de modelos spaCy"""
+    with _models_lock:
+        if language not in _models_cache:
+            try:
+                if language == 'en':
+                    _models_cache[language] = spacy.load('en_core_web_sm')
+                else:
+                    _models_cache[language] = spacy.load('es_core_news_sm')
+                logging.getLogger("preprocessing").info(f"Loaded spaCy model for {language}")
+            except OSError:
+                # Fallback to basic model
+                _models_cache[language] = spacy.blank(language)
+                logging.getLogger("preprocessing").warning(f"Using blank model for {language}")
+        return _models_cache[language]
 
 # Configuración del logger para este servicio
 logger = logging.getLogger("api.services.preprocessing_service")
 
 class TextPreprocessor:
     """
-    Clase para preprocesar texto usando modelos de lenguaje natural.
-    
-    Esta clase maneja el preprocesamiento de texto para diferentes idiomas,
-    incluyendo la detección automática del idioma, lematización y eliminación
-    de stop words. También incluye gestión de memoria y caché para optimizar
-    el rendimiento.
-    
-    Attributes:
-        __min_text_length (int): Longitud mínima del texto para ser procesado
-        __memory_threshold (int): Porcentaje máximo de memoria antes de limpiar caché
+    Optimized text preprocessor with intelligent caching and lazy loading.
     """
+    _instance: Optional['TextPreprocessor'] = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
-        """
-        Inicializa el preprocesador de texto con valores predeterminados.
-        
-        El preprocesador se configura con una longitud mínima de texto de 5 caracteres
-        y un umbral de memoria del 80% para la limpieza automática del caché.
-        """
+        if hasattr(self, '_initialized'):
+            return
         self.__min_text_length = 5
         self.__memory_threshold = 80
-        logger.debug("TextPreprocessor initialized with min_text_length")
+        self._language_cache = {}
+        self._initialized = True
+        logger.debug("TextPreprocessor initialized as singleton")
 
-    @lru_cache(maxsize=1000)
-    def preprocess(self, text: str)-> str:
+    @lru_cache(maxsize=2000)  # Increased cache size
+    def preprocess(self, text: str) -> str:
         """
-        Preprocesa un texto aplicando varios pasos de procesamiento de lenguaje natural.
-        
-        El método realiza los siguientes pasos:
-        1. Verifica la longitud mínima del texto
-        2. Detecta el idioma automáticamente
-        3. Aplica lematización usando el modelo correspondiente al idioma
-        4. Elimina stop words y caracteres no alfabéticos
-        
-        Args:
-            text (str): El texto a preprocesar
-            
-        Returns:
-            str: Texto preprocesado con tokens lematizados separados por espacios
-                o cadena vacía si el texto es muy corto
-        
-        Note:
-            Los resultados se almacenan en caché para mejorar el rendimiento
-            en textos repetidos.
+        Optimized text preprocessing with caching and fast language detection.
         """
         if len(text.strip()) < self.__min_text_length:
-            logger.warning("Text too short to preprocess")
             return ""
-        language, _ = langid.classify(text)
-        logger.info("Detected language: %s", language)
-
-        if language == 'en':
-            nlp = MODELS.get(language, MODELS['en'])
+        
+        # Fast language detection with caching
+        text_hash = hash(text[:100])  # Use first 100 chars for language detection
+        if text_hash in self._language_cache:
+            language = self._language_cache[text_hash]
         else:
-            nlp = MODELS.get(language, MODELS['es'])
-
+            language, confidence = langid.classify(text)
+            if confidence > 0.8:  # Only cache high-confidence detections
+                self._language_cache[text_hash] = language
+        
+        # Use appropriate model
+        nlp = get_spacy_model('en' if language == 'en' else 'es')
+        
+        # Optimized processing
         doc = nlp(text.lower())
-        tokens = [token.lemma_ for token in doc if not token.is_stop and token.is_alpha]
-        logger.debug("Preprocessed tokens: %s", tokens)
+        tokens = [token.lemma_ for token in doc 
+                 if not token.is_stop and token.is_alpha and len(token.text) > 2]
+        
         return " ".join(tokens)
 
     def check_memory_usage(self):
         """
-        Verifica el uso de memoria y limpia el caché si es necesario.
-        
-        Este método monitorea el uso de memoria del sistema y, si supera
-        el umbral configurado (__memory_threshold), limpia el caché de
-        preprocesamiento para liberar memoria.
-        
-        Note:
-            Este método es útil para prevenir problemas de memoria en
-            sistemas con recursos limitados o bajo alta carga.
+        Smart memory management with selective cache clearing.
         """
-        memory = psutil.virtual_memory()
-        if memory.percent > self.__memory_threshold:
-            self._clear_cache()
-            logger.info(f"Cache limpiado por alto uso de memoria usado)")
+        try:
+            memory = psutil.virtual_memory()
+            if memory.percent > self.__memory_threshold:
+                # Clear language cache first (smaller impact)
+                if len(self._language_cache) > 100:
+                    self._language_cache.clear()
+                    logger.info("Language cache cleared")
+                
+                # If still high memory, clear preprocessing cache
+                if memory.percent > self.__memory_threshold + 5:
+                    self._clear_cache()
+                    logger.info(f"Full cache cleared - memory usage: {memory.percent}%")
+        except Exception as e:
+            logger.warning(f"Memory check failed: {e}")
 
     def _clear_cache(self):
         """
-        Método privado para limpiar el caché de la función preprocess.
-        
-        Elimina todas las entradas almacenadas en el caché del método
-        preprocess, liberando la memoria utilizada por los resultados
-        previamente calculados.
-        
-        Note:
-            Este método es llamado automáticamente por check_memory_usage
-            cuando el uso de memoria supera el umbral establecido.
+        Clear preprocessing cache and language cache.
         """
         self.preprocess.cache_clear()
-        logger.info("Cache de preprocess limpiado")
+        self._language_cache.clear()
+        logger.info("All caches cleared")
+    
+    def get_cache_info(self) -> dict:
+        """Get cache statistics for monitoring"""
+        return {
+            'preprocess_cache': self.preprocess.cache_info()._asdict(),
+            'language_cache_size': len(self._language_cache)
+        }

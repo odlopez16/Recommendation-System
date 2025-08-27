@@ -1,24 +1,27 @@
-from os import close
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime
+
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from contextlib import asynccontextmanager
-import uvicorn
+
 from api.database.database_config import initialize_databases, close_databases
 from api.routers.auth_router import router as auth_router
 from api.routers.embedding_router import router as embed_router
 from api.routers.products_router import router as products_router
 from api.routers.likes_router import router as likes_router
-# Importar middlewares
 from api.middleware.rate_limiter import RateLimiter
-import asyncio
 from api.middleware.request_validator import RequestValidator
-import logging
+from api.middleware.performance_middleware import PerformanceMiddleware, metrics_endpoint
+from config import config
 from logging_config import setup_logging
 
 
@@ -70,32 +73,52 @@ app = FastAPI(
     openapi_url="/api/openapi.json"  # Mover OpenAPI schema
 )
 
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
+# Performance middleware first
+app.add_middleware(PerformanceMiddleware)
 
-app.middleware("http")(RateLimiter(requests_per_minute=60))
+# Security middleware
+if config.ENV_STATE == "prod":
+    app.add_middleware(
+        TrustedHostMiddleware, 
+        allowed_hosts=["yourdomain.com", "www.yourdomain.com"]
+    )
+else:
+    app.add_middleware(
+        TrustedHostMiddleware, 
+        allowed_hosts=["localhost", "127.0.0.1", "0.0.0.0"]
+    )
+
+# Compression middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Custom middleware
+app.middleware("http")(RateLimiter(requests_per_minute=100 if config.ENV_STATE == "prod" else 200))
 app.middleware("http")(RequestValidator())
 
 
+# CORS configuration
 origins = [
-    "http://localhost:3000",
-    "http://localhost:4000",
-    "http://localhost:3001",
+    "http://localhost:3000", 
+    "http://localhost:3001"
 ]
+
+if config.ENV_STATE == "prod":
+    origins = ["https://yourdomain.com"]  # Replace with your production domain
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=[
         "Content-Type",
-        "Authorization",
+        "Authorization", 
         "Accept",
         "Origin",
-        "X-Requested-With"
+        "X-Requested-With",
+        "Cache-Control"
     ],
-    expose_headers=["Content-Type", "Authorization"],
+    expose_headers=["Content-Type", "Authorization", "X-Process-Time", "X-Memory-Usage"],
     max_age=3600,
 )
 
@@ -117,14 +140,36 @@ async def get_api_version():
 async def home():
     return {"message": "Welcome to the API ⚡"}
 
+@app.get("/metrics")
+async def get_metrics():
+    """Endpoint para métricas de Prometheus"""
+    return await metrics_endpoint()
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint optimizado"""
+    return {
+        "status": "healthy",
+        "environment": config.ENV_STATE,
+        "timestamp": datetime.now().isoformat()
+    }
+
 
 if __name__ == "__main__":
     port = 4000
-    print(f"Starting server on http://localhost:{port}")
+    host = "127.0.0.1" if config.ENV_STATE == "dev" else "0.0.0.0"
+    reload = config.ENV_STATE == "dev"
+    
+    print(f"Starting server on http://{host}:{port}")
+    print(f"Environment: {config.ENV_STATE}")
+    print(f"Docs available at: http://{host}:{port}/api/docs")
+    print(f"Metrics available at: http://{host}:{port}/metrics")
+    
     uvicorn.run(
-        app=app,
-        host="0.0.0.0",
+        "api.main:app" if reload else app,
+        host=host,
         port=port,
-        reload=True,
-        log_level="info"
+        reload=reload,
+        log_level="info" if config.ENV_STATE == "prod" else "debug",
+        workers=1 if reload else 4
     )

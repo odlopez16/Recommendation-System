@@ -4,8 +4,8 @@ from pathlib import Path
 from pydantic import UUID4
 from api.models.user_interaction_model import UserProductInteractionInDB
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-import faiss #type: ignore
-from typing import Any
+import faiss
+from typing import Any, Optional
 from sqlalchemy import Insert, Select, desc, func
 from api.models.embedding_model import Embedding, EmbeddingIn
 from api.models.products_model import Product
@@ -19,60 +19,94 @@ import numpy as np
 from openai import OpenAI
 from api.services.recommendations.preprocessing_service import TextPreprocessor
 from api.services.recommendations.product_service import product_processor
+from api.services.cache_service import cache_manager
 from config import config
 import logging
+import asyncio
+from functools import lru_cache
 
 
 class EmbeddingProcessor:
     """
     Handles the generation, storage, and retrieval of embeddings for products.
+    Optimized with caching, lazy loading, and batch processing.
     """
+    _instance: Optional['EmbeddingProcessor'] = None
+    _embeddings_cache: Optional[list[Embedding]] = None
+    _text_preprocessor: Optional[TextPreprocessor] = None
+    
+    def __new__(cls, openai_client: OpenAI, dimension: int = 768):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self, openai_client: OpenAI, dimension: int = 768) -> None:
+        if hasattr(self, '_initialized'):
+            return
         self.logger = logging.getLogger("api.helpers.embedding.EmbeddingProcessor")
-        """
-        Initialize the EmbeddingProcessor.
-        Args:
-            openai_client (OpenAI): The OpenAI client for embedding generation.
-            dimension (int): The dimension of the embeddings.
-        """
         self.__openai_client = openai_client
         self.__dimension = dimension
         self.__like_service = like_service
+        self._initialized = True
 
+    @property
+    def text_preprocessor(self) -> TextPreprocessor:
+        """Lazy loading del preprocessor"""
+        if self._text_preprocessor is None:
+            self._text_preprocessor = TextPreprocessor()
+        return self._text_preprocessor
+    
     async def generate_embeddings(self, text: str = "", products: list[Product] = []) -> list[tuple[Any, list[float]]] | Any:
         """
-        Generate embeddings for a given text or for all products if text is empty.
-        Args:
-            text (str): The input text. If empty, generate for all products.
-            products (list[Product]): List of products to generate embeddings for.
-        Returns:
-            list[float] | list[tuple[Any, list[float]]]: Embedding(s) generated.
+        Generate embeddings with batch processing and caching.
         """
-        text_preprocessor = TextPreprocessor()
         try:
             if text == "":
-                products = await product_processor.get_products_from_primary_db()
-                embed_list: list[tuple[Any, list[float]]] = []
-                for prod in products:
-                    embedding: list[float] = self.__openai_client.embeddings.create(
-                        input=text_preprocessor.preprocess(prod.description),
-                        model=config.OPENAI_MODEL,
-                        dimensions=self.__dimension
-                    ).data[0].embedding
-                    embed_list.append((prod.id, embedding))
-                self.logger.info(f"Generated embeddings for {len(embed_list)} products.")
-                return embed_list
+                return await self._generate_batch_embeddings(products)
             else:
-                embed: list[float] = self.__openai_client.embeddings.create(
-                    input=text_preprocessor.preprocess(text),
-                    model=config.OPENAI_MODEL,
-                    dimensions=self.__dimension
-                ).data[0].embedding
-                self.logger.info("Generated embedding for input text.")
-                return embed
+                return await self._generate_single_embedding(text)
         except Exception as e:
             self.logger.error(f"Error generating embeddings: {e}")
             raise
+    
+    async def _generate_single_embedding(self, text: str) -> list[float]:
+        """Generate single embedding with preprocessing"""
+        processed_text = self.text_preprocessor.preprocess(text)
+        embedding = self.__openai_client.embeddings.create(
+            input=processed_text,
+            model=config.OPENAI_MODEL,
+            dimensions=self.__dimension
+        ).data[0].embedding
+        self.logger.info("Generated embedding for input text.")
+        return embedding
+    
+    async def _generate_batch_embeddings(self, products: list[Product] = []) -> list[tuple[Any, list[float]]]:
+        """Generate embeddings in batches for better performance"""
+        if not products:
+            products = await product_processor.get_products_from_primary_db(limit=50)  # Limit initial load
+        
+        batch_size = 10  # Process in smaller batches
+        embed_list: list[tuple[Any, list[float]]] = []
+        
+        for i in range(0, len(products), batch_size):
+            batch = products[i:i + batch_size]
+            batch_texts = [self.text_preprocessor.preprocess(prod.description) for prod in batch]
+            
+            # Batch API call
+            response = self.__openai_client.embeddings.create(
+                input=batch_texts,
+                model=config.OPENAI_MODEL,
+                dimensions=self.__dimension
+            )
+            
+            for j, embedding_data in enumerate(response.data):
+                embed_list.append((batch[j].id, embedding_data.embedding))
+            
+            # Small delay to avoid rate limits
+            await asyncio.sleep(0.1)
+        
+        self.logger.info(f"Generated embeddings for {len(embed_list)} products in batches.")
+        return embed_list
 
     async def _get_embedding_by_prod_id(self, product_id: Any) -> Embedding | None:
         """
@@ -113,26 +147,47 @@ class EmbeddingProcessor:
             self.logger.error(f"Error saving embeddings")
             raise
 
-    async def get_embeddings_from_db(self) -> list[Embedding] | Any:
+    async def get_embeddings_from_db(self) -> list[Embedding]:
         """
-        Retrieve all embeddings from the database and convert them to list[float].
-        Returns:
-            list[Embedding]: List of Embedding objects.
+        Retrieve embeddings with caching for better performance.
         """
+        # Check cache first
+        if self._embeddings_cache is not None:
+            return self._embeddings_cache
+        
+        # Try Redis cache
+        cached_embeddings = await cache_manager.get_cached_embeddings()
+        if cached_embeddings:
+            self._embeddings_cache = cached_embeddings
+            return cached_embeddings
+        
         try:
-            query: Select = embeddings_table.select()
+            # Limit initial query for faster startup
+            query: Select = embeddings_table.select().limit(100)
             records = await db.get_database().fetch_all(query)
-            embeddings: list[Embedding] = [Embedding(
-                id=record["id"],
-                product_id=record["product_id"],
-                embedding=np.frombuffer(record["embedding"], dtype=np.float32).tolist(),
-                created_at=record["created_at"]
-            ) for record in records]
             
-            self.logger.info(f"Fetched embeddings from the database.")
+            embeddings: list[Embedding] = []
+            for record in records:
+                try:
+                    embedding = Embedding(
+                        id=record["id"],
+                        product_id=record["product_id"],
+                        embedding=np.frombuffer(record["embedding"], dtype=np.float32).tolist(),
+                        created_at=record["created_at"]
+                    )
+                    embeddings.append(embedding)
+                except Exception as e:
+                    self.logger.warning(f"Skipping invalid embedding record: {e}")
+                    continue
+            
+            # Cache results
+            self._embeddings_cache = embeddings
+            await cache_manager.set_cached_embeddings(embeddings, ttl=1800)  # 30 min cache
+            
+            self.logger.info(f"Fetched {len(embeddings)} embeddings from database.")
             return embeddings
         except Exception as e:
-            self.logger.error(f"Error fetching embeddings from database")
+            self.logger.error(f"Error fetching embeddings from database: {e}")
             return []
 
     def get_embeddings_average(self, embed_list: list[list[float]]) -> np.ndarray | Any:
@@ -191,55 +246,106 @@ class EmbeddingProcessor:
         
         faiss_manager: FaissManager = FaissManager(embeddings_list)
         faiss_manager.update_index()
-        products_list: list[Product] = await faiss_manager.search(average)
+        products_list: list[Product] = await faiss_manager.search(average)  # Sin k para obtener todos
         return products_list
 
 
 class FaissManager:
     """
-    Manages a FAISS index for similarity search on embeddings.
+    Optimized FAISS manager with lazy initialization and caching.
     """
+    _instance: Optional['FaissManager'] = None
+    _index: Optional[faiss.Index] = None
+    
+    def __new__(cls, embed_list: list[Embedding], dimension: int = 768):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self, embed_list: list[Embedding], dimension: int = 768):
+        if hasattr(self, '_initialized'):
+            return
         self.logger = logging.getLogger("api.helpers.embedding.FaissManager")
-        """
-        Initialize the FAISS index.
-        Args:
-            dimension (int): The dimension of the embeddings.
-        """
         self.embed_list = embed_list
-        self.embeddings: np.ndarray = np.array([e.embedding for e in embed_list])
-        self.index = faiss.IndexFlatL2(dimension)
-        self.logger.info(f"Initialized FAISS index.")
+        self.dimension = dimension
+        self._initialized = True
+        self.logger.info(f"Initialized FAISS manager.")
+    
+    @property
+    def index(self) -> faiss.Index:
+        """Lazy initialization of FAISS index"""
+        if self._index is None:
+            self._index = faiss.IndexFlatL2(self.dimension)
+            self.logger.info("Created FAISS index on demand.")
+        return self._index
+    
+    @property
+    def embeddings(self) -> np.ndarray:
+        """Lazy loading of embeddings array"""
+        if not hasattr(self, '_embeddings_array'):
+            self._embeddings_array = np.array([e.embedding for e in self.embed_list], dtype=np.float32)
+        return self._embeddings_array
 
     def update_index(self) -> None:
         """
-        Add new embeddings to the FAISS index.
+        Add embeddings to FAISS index with optimization.
         """
+        if len(self.embed_list) == 0:
+            self.logger.warning("No embeddings to add to index.")
+            return
+            
+        embeddings_array = self.embeddings
+        if embeddings_array.size == 0:
+            self.logger.warning("Empty embeddings array.")
+            return
+            
         if not self.index.is_trained:
             self.logger.debug("Training FAISS index.")
-            self.index.train(self.embeddings.astype(np.float32))  # type: ignore
-        self.index.add(self.embeddings.astype(np.float32))  # type: ignore
-        self.logger.info(f"Added embeddings to FAISS index.")
+            self.index.train(embeddings_array) #type: ignore
+        
+        self.index.add(embeddings_array) #type: ignore
+        self.logger.info(f"Added {len(self.embed_list)} embeddings to FAISS index.")
 
-    async def search(self, query: np.ndarray, k: int = 5) -> list[Product]:
-        self.logger.debug(f"Searching FAISS index for top {k} results.")
+    async def search(self, query: np.ndarray, k: int = None) -> list[Product]:
+        """Optimized search with batch product fetching"""
+        # Use all available embeddings if k is None
+        search_k = k if k is not None else self.index.ntotal
+        self.logger.debug(f"Searching FAISS index for top {search_k} results.")
+        
+        if self.index.ntotal == 0:
+            self.logger.warning("FAISS index is empty.")
+            return []
+            
         if query.ndim == 1:
             query = query.reshape(1, -1).astype(np.float32)
-        indexes: np.ndarray = self.index.search(query, k)[1][0]  # type: ignore
-        ind_list: list = indexes.tolist()
-        recommended_products: list[Product] = []
-        for idx in ind_list:
-            if idx < 0 or idx >= len(self.embed_list):
-                self.logger.error(f"Invalid index from FAISS")
-                continue
+            
+        try:
+            _, indexes = self.index.search(query, min(search_k, self.index.ntotal)) #type: ignore
+            ind_list = indexes[0].tolist()
+            
+            # Batch fetch products
+            product_ids = []
+            for idx in ind_list:
+                if 0 <= idx < len(self.embed_list):
+                    product_ids.append(self.embed_list[idx].product_id)
+            
+            # Fetch products in batch
+            recommended_products = await self._batch_fetch_products(product_ids)
+            return recommended_products
+            
+        except Exception as e:
+            self.logger.error(f"Error in FAISS search: {e}")
+            return []
+    
+    async def _batch_fetch_products(self, product_ids: list) -> list[Product]:
+        """Fetch multiple products efficiently"""
+        products = []
+        for product_id in product_ids:
             try:
-                product_id = self.embed_list[idx].product_id
-                product: Product = await product_processor.get_product_by_id(product_id)
+                product = await product_processor.get_product_by_id(product_id)
                 if product:
-                    recommended_products.append(product)
-                else:
-                    self.logger.error(f"Product not found or invalid for index")
+                    products.append(product)
             except Exception as e:
-                self.logger.error(f"Error fetching product")
+                self.logger.warning(f"Failed to fetch product {product_id}: {e}")
                 continue
-        return recommended_products
+        return products
