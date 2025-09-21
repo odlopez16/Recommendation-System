@@ -89,7 +89,7 @@ async def initialize_databases():
         await secondary_database.get_database().connect()
         logger.info("Secondary database connected.")
     except Exception as e:
-        logger.error(f"Error initializing databases: {e}")
+        logger.error(f"Error initializing databases")
         raise
 
 
@@ -106,6 +106,6 @@ async def close_databases():
         await secondary_database.get_database().disconnect()
         logger.info("Secondary database disconnected.")
     except Exception as e:
-        logger.error(f"Error closing databases: {e}")
+        logger.error(f"Error closing databases")
         raise
 

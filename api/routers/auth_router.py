@@ -38,9 +38,13 @@ async def register(user: UserCreate):
         if not db_user:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not created")
         return db_user
+    except HTTPException as e:
+        # Re-raise HTTP exceptions with their original status and message
+        logger.error(f"Error in register endpoint: {e.detail}")
+        raise
     except Exception as e:
-        logger.error(f"Error in register endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        logger.error(f"Unexpected error in register endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 @router.post("/login", response_model=UserWithoutPassword, status_code=status.HTTP_200_OK)
 async def login(

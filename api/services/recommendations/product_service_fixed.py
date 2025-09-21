@@ -181,14 +181,14 @@ class ProductProcessor:
                     ]
         return products
     
-    async def get_popular_products(self, limit: int = 100, skip: int = 0) -> list[Product]:
+    async def get_popular_products(self, limit: int = 100) -> list[Product]:
         """Get most popular products based on like count"""
 
         try:
             query_popular_products: Select = products_table.select().join(
                 user_interactions_table,
                 products_table.c.id == user_interactions_table.c.product_id
-            ).where(user_interactions_table.c.liked == True).group_by(products_table.c.id).order_by(desc(func.count(user_interactions_table.c.product_id))).limit(limit).offset(skip)
+            ).where(user_interactions_table.c.liked == True).group_by(products_table.c.id).order_by(desc(func.count(user_interactions_table.c.product_id))).limit(limit)
                 
             result = await prim_db.get_database().fetch_all(query=query_popular_products)
             return [Product(**dict(product)) for product in result]
@@ -209,7 +209,17 @@ class ProductProcessor:
             secondary_products: list[Product] = await self.get_products_from_secondary_db()
             self.logger.info(f"Found {len(secondary_products)} products in secondary DB")
             
+            # Initialize embedding processor
+            embed_processor = EmbeddingProcessor(client)
+            existing_embeddings: list[Embedding] = await embed_processor.get_embeddings_from_db()
+            
+            # Create set of product IDs that already have embeddings for faster lookup
+            existing_embedding_ids = {emb.product_id for emb in existing_embeddings}
+            self.logger.info(f"Found {len(existing_embeddings)} existing embeddings")
+            
             migrated_count = 0
+            migrated_products: list[Product] = []
+            products_needing_embeddings: list[Product] = []
             
             for product in secondary_products:
                 try:
@@ -228,6 +238,11 @@ class ProductProcessor:
                     query: Insert = products_table.insert().values(**product_data)
                     await prim_db.get_database().execute(query)
                     migrated_count += 1
+                    migrated_products.append(product)
+                    
+                    # Check if product needs embedding generation
+                    if product.id not in existing_embedding_ids:
+                        products_needing_embeddings.append(product)
                     
                     self.logger.debug(f"Migrated product: {product.name}")
                         
@@ -235,34 +250,14 @@ class ProductProcessor:
                     self.logger.warning(f"Failed to migrate product {product.id}: {e}")
                     continue
                 
-            # Generate embeddings for all products in primary DB using temp_embedding_generator logic
-            self.logger.info("Starting embedding generation for migrated products")
-            
-            # Get all products from primary DB
-            all_products = await self.get_products_from_primary_db(limit=1000)
-            
-            if all_products:
-                # Initialize embedding processor
-                embed_processor = EmbeddingProcessor(client)
-                
-                # Filter products that need embeddings
-                products_needing_embeddings: list[Product] = []
-                
-                for product in all_products:
-                    existing_embedding = await embed_processor.get_embedding_by_prod_id(product.id)
-                    if existing_embedding is None:
-                        products_needing_embeddings.append(product)
-                
-                self.logger.info(f"Products needing embeddings: {len(products_needing_embeddings)}")
-                
-                if products_needing_embeddings:
-                    embed_generated = await embed_processor.generate_embeddings(products=products_needing_embeddings)
-                    await embed_processor.save_embeddings(embeddings_generated=embed_generated)
-                    self.logger.info(f"Generated and saved {len(embed_generated)} new embeddings")
-                else:
-                    self.logger.info("All products already have embeddings")
+            # Generate embeddings for products that need them
+            if products_needing_embeddings:
+                self.logger.info(f"Generating embeddings for {len(products_needing_embeddings)} products")
+                embed_generated: list[tuple[Any, list[float]]] = await embed_processor.generate_embeddings(products=products_needing_embeddings)
+                await embed_processor.save_embeddings(embeddings_generated=embed_generated)
+                self.logger.info(f"Generated and saved {len(embed_generated)} new embeddings")
 
-            self.logger.info(f"Migration completed: {migrated_count} products migrated with embeddings generated")
+            self.logger.info(f"Migration completed: {migrated_count} products migrated, {len(products_needing_embeddings)} embeddings generated")
             
         except Exception as e:
             self.logger.error(f"Error durante la migración de productos: {str(e)}")

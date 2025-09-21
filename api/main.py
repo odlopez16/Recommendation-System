@@ -18,6 +18,8 @@ from api.routers.auth_router import router as auth_router
 from api.routers.embedding_router import router as embed_router
 from api.routers.products_router import router as products_router
 from api.routers.likes_router import router as likes_router
+from api.routers.evaluation_router import router as evaluation_router
+from api.routers.migrate_router import router as migrate_router
 from api.middleware.rate_limiter import RateLimiter
 from api.middleware.request_validator import RequestValidator
 from api.middleware.performance_middleware import PerformanceMiddleware, metrics_endpoint
@@ -46,14 +48,14 @@ async def lifespan(app: FastAPI):
                 break
             except Exception as e:
                 if attempt == max_retries - 1:
-                    logger.error(f"Failed to initialize databases after {max_retries} attempts")
+                    logger.error(f"Failed to initialize databases after max attempts")
                     raise
                 logger.warning(f"Attempt {attempt + 1} failed: {str(e)}. Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
         
         yield
     except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
+        logger.error(f"Error during startup")
         raise
     finally:
         logger.info("Shutting down application and closing databases...")
@@ -61,7 +63,7 @@ async def lifespan(app: FastAPI):
             await close_databases()
             logger.info("Databases closed successfully.")
         except Exception as e:
-            logger.error(f"Error closing databases: {str(e)}")
+            logger.error(f"Error closing databases")
 
 app = FastAPI(
     title="Recommendation System API",
@@ -130,6 +132,8 @@ app.include_router(embed_router, prefix=API_V1_PREFIX)
 app.include_router(auth_router, prefix=API_V1_PREFIX)
 app.include_router(products_router, prefix=API_V1_PREFIX)
 app.include_router(likes_router, prefix=API_V1_PREFIX)
+app.include_router(evaluation_router, prefix=API_V1_PREFIX)
+app.include_router(migrate_router, prefix=API_V1_PREFIX)
 
 # Endpoint para verificar versión de API
 @app.get("/api/version")

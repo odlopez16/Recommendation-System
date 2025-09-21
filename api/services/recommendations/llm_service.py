@@ -28,24 +28,22 @@ def build_answer(user_query: str, recommended_products: list[Product]) -> str | 
     Args:
         user_query (str): User's search query.
         recommended_products (list): List of recommended Product objects.
-
     Returns:
+    
         str | None: Natural language generated response or None if an error occurs.
     """
     products_list: str = "\n".join(
-        f"- {p.name}: {p.description} {p.price}"
+        f"- {p.id} {p.name}: {p.description} {p.price}"
         for p in recommended_products
     )
     sys_role = "You are an AI assistant specialized in product recommendations."
 
     prompt = f"""
         A user has made the following query: "{user_query}"
-
         Here is a list of available products:
         {products_list}
 
-        Use only the products from the list to answer the user's query. Do not invent products or additional information. Respond in English if the products are in English, otherwise in Spanish, in a clear and helpful manner, explaining why the recommended products are suitable for the query according to their respective descriptions.
-    """
+        Use only the products from the list to answer the user's query. Do not invent products or additional information. Respond in English if the products are in English, otherwise in Spanish, in a clear and helpful manner, explaining why the recommended products are suitable for the query according to their respective descriptions."""
     try:
         response = client.chat.completions.create(
             model="radiance",

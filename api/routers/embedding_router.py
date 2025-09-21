@@ -8,9 +8,11 @@ from api.models.others import Description, Response
 from api.services.auth.auth_service import get_current_user
 from api.models.auth_model import UserInDB, UserWithoutPassword
 from api.services.cache_service import cache_manager
+from api.services.recommendations.product_service import product_processor
 import numpy as np
 import asyncio
-from typing import Optional
+from typing import Optional, Literal
+from fastapi import Query
 
 logger = logging.getLogger("api.routers.embedding_router")
 
@@ -33,6 +35,7 @@ async def get_faiss_manager() -> FaissManager:
     if _faiss_manager is None:
         embed_processor = await get_embed_processor()
         embeddings_list = await embed_processor.get_embeddings_from_db()
+        print(f"😁😁😁😁{len(embeddings_list)}")
         _faiss_manager = FaissManager(embed_list=embeddings_list)
         _faiss_manager.update_index()
     return _faiss_manager
@@ -40,12 +43,18 @@ async def get_faiss_manager() -> FaissManager:
 @router.post("/content/chat", 
             response_model=Response, 
             status_code=status.HTTP_200_OK,
-            description="Get recommended products based on content description"
+            description="Get recommended products based on content description with filters"
             )
 async def recommender_by_content(
     payload: Description,
     background_tasks: BackgroundTasks,
-    current_user: UserWithoutPassword = Depends(get_current_user)
+    current_user: UserWithoutPassword = Depends(get_current_user),
+    skip: int = Query(default=0, ge=0, description="Number of products to skip"),
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum number of products to return"),
+    category: Optional[str] = Query(default=None, description="Filter by category"),
+    sort_by: Optional[Literal["name", "price"]] = Query(default=None, description="Sort by field"),
+    order: Optional[Literal["asc", "desc"]] = Query(default="asc", description="Sort order"),
+    search: Optional[str] = Query(default=None, description="Additional search term")
 ):
     text = payload.description.strip()
 
@@ -56,25 +65,47 @@ async def recommender_by_content(
         )
     
     try:
-        # Use cached instances
         embed_processor = await get_embed_processor()
         faiss_manager = await get_faiss_manager()
         
-        # Generate embedding for user query
         text_embedded = np.array(await embed_processor.generate_embeddings(text=text))
         
-        # Search for similar products
-        recommended_products = await faiss_manager.search(text_embedded)
+        recommended_products = await faiss_manager.search(text_embedded, k=200)  # Get more for filtering
         
-        if not recommended_products:
-            # Background task to refresh embeddings if empty
-            background_tasks.add_task(refresh_embeddings_background)
+        # Apply filters to recommended products
+        filtered_products = []
+        for product in recommended_products:
+            # Category filter
+            if category and hasattr(product, 'category') and product.category and product.category.lower() != category.lower():
+                continue
+                
+            # Additional search filter
+            if search:
+                search_term = search.lower()
+                product_name = product.name.lower() if product.name else ""
+                product_desc = product.description.lower() if hasattr(product, 'description') and product.description else ""
+                if search_term not in product_name and search_term not in product_desc:
+                    continue
+                    
+            filtered_products.append(product)
+        
+        # Sort products
+        if sort_by:
+            reverse = (order == "desc")
+            if sort_by == "name":
+                filtered_products.sort(key=lambda x: x.name or "", reverse=reverse)
+            elif sort_by == "price":
+                filtered_products.sort(key=lambda x: x.price or 0, reverse=reverse)
+        
+        # Apply pagination
+        paginated_products = filtered_products[skip:skip + limit]
+        
+        if not paginated_products:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No products found. Please try again later."
+                detail="No products found matching your criteria. Please try again with different filters."
             )
         
-        # Generate answer asynchronously
         answer_task = asyncio.create_task(
             asyncio.to_thread(build_answer, text, recommended_products)
         )
@@ -85,7 +116,7 @@ async def recommender_by_content(
         
         return Response(
             answer=answer,
-            products=recommended_products
+            products=paginated_products
         )
         
     except HTTPException:
@@ -97,51 +128,145 @@ async def recommender_by_content(
             detail="Internal server error during recommendation."
         )
 
-async def refresh_embeddings_background():
-    """Background task to refresh embeddings"""
-    try:
-        embed_processor = await get_embed_processor()
-        await embed_processor.save_embeddings()
-        logger.info("Background embeddings refresh completed")
-    except Exception as e:
-        logger.error(f"Background embeddings refresh failed: {e}")
-
 @router.get("/interaction", 
             response_model=list[Product], 
             status_code=status.HTTP_200_OK,
-            description="Get recommended products based on user interactions"
+            description="Get recommended products based on user interactions with filters"
             )
 async def recommender_by_interaction(
-    current_user: UserWithoutPassword = Depends(get_current_user)
+    background_tasks: BackgroundTasks,
+    current_user: UserWithoutPassword = Depends(get_current_user),
+    skip: int = Query(default=0, ge=0, description="Number of products to skip"),
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum number of products to return"),
+    category: Optional[str] = Query(default=None, description="Filter by category"),
+    sort_by: Optional[Literal["name", "price"]] = Query(default=None, description="Sort by field"),
+    order: Optional[Literal["asc", "desc"]] = Query(default="asc", description="Sort order"),
+    search: Optional[str] = Query(default=None, description="Search term")
 ):
     try:
         embed_processor = await get_embed_processor()
         embeddings_list = await embed_processor.get_embeddings_from_db()
         
-        if not embeddings_list:
-            return []  # Return empty instead of generating embeddings synchronously
         
-        recommended_products = await embed_processor.get_recommended_products_per_user(
-            user=current_user, 
-            embeddings_list=embeddings_list
-        )
-        logger.info(f"😎😎😎😎Recommended products: {recommended_products}")
-        return recommended_products
+        if not embeddings_list:
+            return []
+        
+        liked_products = await product_processor.get_liked_products_per_user(current_user.id)
+        logger.info(f"Found {len(liked_products)} liked products for user {current_user.id}")
+        
+        if not liked_products:
+            logger.info("No liked products found, returning empty list")
+            return []
+        
+        liked_embeddings: list[list[float]] = []
+        for product in liked_products:
+            try:
+                embedding = await embed_processor.get_embedding_by_prod_id(product.id)
+                liked_embeddings.append(embedding.embedding)
+                logger.info(f"Added embedding for product {product.id}")
+            except Exception as e:
+                logger.warning(f"Could not get embedding for product {product.id}: {e}")
+                continue
+        
+        logger.info(f"Found {len(liked_embeddings)} embeddings for liked products")
+        
+        if not liked_embeddings:
+            logger.info("No embeddings found for liked products")
+            return []
+        
+        average_embedding = embed_processor.get_embeddings_average(liked_embeddings)
+        
+        faiss_manager = await get_faiss_manager()
+        recommended_products = await faiss_manager.search(average_embedding, k=200)  # Get more for filtering
+        
+        # Apply filters to recommended products
+        filtered_products = []
+        for product in recommended_products:
+            # Skip products already liked by user
+            if any(liked.id == product.id for liked in liked_products):
+                continue
+                
+            # Category filter
+            if category and hasattr(product, 'category') and product.category and product.category.lower() != category.lower():
+                continue
+                
+            # Search filter - search in name and description
+            if search:
+                search_term = search.lower()
+                product_name = product.name.lower() if product.name else ""
+                product_desc = product.description.lower() if hasattr(product, 'description') and product.description else ""
+                if search_term not in product_name and search_term not in product_desc:
+                    continue
+                    
+            filtered_products.append(product)
+        
+        # Sort products
+        if sort_by:
+            reverse = (order == "desc")
+            if sort_by == "name":
+                filtered_products.sort(key=lambda x: x.name or "", reverse=reverse)
+            elif sort_by == "price":
+                filtered_products.sort(key=lambda x: x.price or 0, reverse=reverse)
+        
+        # Apply pagination
+        paginated_products = filtered_products[skip:skip + limit]
+        
+        logger.info(f"Recommended products generated successfully: {len(paginated_products)} products")
+        return paginated_products
         
     except Exception as e:
-        logger.error(f"Error in interaction recommendation: {e}")
-        return []  # Graceful degradation
+        logger.error(f"Error in interaction recommendation")
+        return []
 
 @router.get("/popular", 
             response_model=list[Product], 
             status_code=status.HTTP_200_OK,
-            description="Get most popular products based on like count"
+            description="Get most popular products based on like count with filters"
             )
-async def get_popular_products():
+async def get_popular_products(
+    skip: int = Query(default=0, ge=0, description="Number of products to skip"),
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum number of products to return"),
+    category: Optional[str] = Query(default=None, description="Filter by category"),
+    sort_by: Optional[Literal["name", "price", "popularity"]] = Query(default="popularity", description="Sort by field"),
+    order: Optional[Literal["asc", "desc"]] = Query(default="desc", description="Sort order"),
+    search: Optional[str] = Query(default=None, description="Search term")
+):
     try:
         embed_processor = await get_embed_processor()
-        popular_products = await embed_processor.get_popular_products(limit=10)
-        return popular_products
+        popular_products = await product_processor.get_popular_products(limit=200)  # Get more for filtering
+        
+        # Apply filters
+        filtered_products = []
+        for product in popular_products:
+            # Category filter
+            if category and hasattr(product, 'category') and product.category and product.category.lower() != category.lower():
+                continue
+                
+            # Search filter
+            if search:
+                search_term = search.lower()
+                product_name = product.name.lower() if product.name else ""
+                product_desc = product.description.lower() if hasattr(product, 'description') and product.description else ""
+                if search_term not in product_name and search_term not in product_desc:
+                    continue
+                    
+            filtered_products.append(product)
+        
+        # Sort products (popularity is already sorted from the query)
+        if sort_by and sort_by != "popularity":
+            reverse = (order == "desc")
+            if sort_by == "name":
+                filtered_products.sort(key=lambda x: x.name or "", reverse=reverse)
+            elif sort_by == "price":
+                filtered_products.sort(key=lambda x: x.price or 0, reverse=reverse)
+        elif sort_by == "popularity" and order == "asc":
+            filtered_products.reverse()  # Reverse the default desc order
+        
+        # Apply pagination
+        paginated_products = filtered_products[skip:skip + limit]
+        
+        return paginated_products
+        
     except Exception as e:
         logger.error(f"Error getting popular products: {e}")
-        return []  # Graceful degradation
+        return []

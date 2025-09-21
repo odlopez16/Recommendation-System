@@ -52,29 +52,19 @@ class TextPreprocessor:
     @lru_cache(maxsize=2000)  # Increased cache size
     def preprocess(self, text: str) -> str:
         """
-        Optimized text preprocessing with caching and fast language detection.
+        Simplified text preprocessing to preserve more semantic information.
         """
         if len(text.strip()) < self.__min_text_length:
             return ""
         
-        # Fast language detection with caching
-        text_hash = hash(text[:100])  # Use first 100 chars for language detection
-        if text_hash in self._language_cache:
-            language = self._language_cache[text_hash]
-        else:
-            language, confidence = langid.classify(text)
-            if confidence > 0.8:  # Only cache high-confidence detections
-                self._language_cache[text_hash] = language
+        # Minimal preprocessing to preserve semantic meaning
+        text = text.lower().strip()
         
-        # Use appropriate model
-        nlp = get_spacy_model('en' if language == 'en' else 'es')
+        # Only remove excessive whitespace, keep all words including numbers
+        import re
+        text = re.sub(r'\s+', ' ', text)
         
-        # Optimized processing
-        doc = nlp(text.lower())
-        tokens = [token.lemma_ for token in doc 
-                 if not token.is_stop and token.is_alpha and len(token.text) > 2]
-        
-        return " ".join(tokens)
+        return text.strip()
 
     def check_memory_usage(self):
         """

@@ -9,9 +9,9 @@ from api.models.user_interaction_model import (
 from api.models.auth_model import UserInDB, UserWithoutPassword
 from api.services.auth.auth_service import get_current_user
 from api.models.others import NumLikes
-import logging
+# import logging
 
-logger = logging.getLogger("api.routers.likes_router")
+# logger = logging.getLogger("api.routers.likes_router")
 
 router = APIRouter(
     prefix="/likes",
@@ -38,7 +38,7 @@ async def set_like_status(
         result: UserProductInteractionInDB = await like_service.set_like_status(current_user, interaction)
         return result
     except Exception as e:
-        logger.error(f"Error setting like status 😭{e}")
+        # logger.error(f"Error setting like status 😭")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while processing your request"
@@ -47,22 +47,31 @@ async def set_like_status(
 @router.get(
     "/me",
     status_code=status.HTTP_200_OK,
-    description="Get all products liked by the current user",
+    description="Get products liked by the current user with pagination",
     response_model=list[UserProductInteractionInDB]
 )
 async def get_my_likes(
+    offset: int = 0,
+    limit: int = 50,
     current_user: UserWithoutPassword = Depends(get_current_user)
 ):
     """
-    Get all products liked by the current user.
+    Get products liked by the current user with pagination.
+    - **offset**: Number of records to skip (default: 0)
+    - **limit**: Maximum number of records to return (default: 50, max: 100)
     """
+    # Limit maximum page size to prevent abuse
+    limit = min(limit, 100)
+    
     try:
         interactions = await like_service.get_user_likes(
-            user_id=current_user.id
+            user_id=current_user.id,
+            offset=offset,
+            limit=limit
         )
-        return [UserProductInteractionInDB(**dict(item)) for item in interactions]
+        return interactions
     except Exception as e:
-        logger.error(f"Error in get_my_likes")
+        # logger.error(f"Error in get_my_likes")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while fetching your liked products"
@@ -89,7 +98,7 @@ async def get_product_likes_count(
             num_likes=response
         )
     except Exception as e:
-        logger.error(f"Error in get_product_likes_count: {str(e)}")
+        # logger.error(f"Error in get_product_likes_count")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while fetching like count"

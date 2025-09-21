@@ -127,9 +127,8 @@ async def create_user(email: str, password: str) -> UserWithoutPassword:
     try:
         # Verificar si el usuario ya existe
         existing_user = await get_user_by_email(email)
-        logger.info(f"Checking existing user: {existing_user}")
         if existing_user is not None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El usuario ya existe")
         
         # Hashear la contraseña
         hashed_password = get_password_hash(password)
@@ -153,9 +152,11 @@ async def create_user(email: str, password: str) -> UserWithoutPassword:
                 created_at=new_user.created_at
             )
         raise not_found_exception("User not found😢")
+    except HTTPException:
+        # Re-raise HTTP exceptions (like user already exists)
+        raise
     except Exception as e:
-        logger.error(f"Error creating user: {e}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error creating user")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error interno del servidor")
 
 async def get_token_from_cookie_or_header(request: Request) -> str | None:
     # Try to get token from Authorization header first
@@ -183,7 +184,6 @@ async def get_current_user(request: Request) -> UserWithoutPassword:
         # Check if token is revoked
         is_revoked = await token_service.is_token_revoked(token)
         if is_revoked:
-            logger.warning("Se intentó usar un token revocado")
             raise unauthorized_exception("Token ha sido revocado")
             
         # Decode and validate token
@@ -406,7 +406,7 @@ async def refresh_access_token(refresh_token: str, session_service = None, reque
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error refreshing token: {str(e)}")
+        logger.error(f"Error refreshing token")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during token refresh",

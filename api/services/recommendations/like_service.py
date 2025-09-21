@@ -2,7 +2,7 @@ from typing import Optional
 from databases import Database
 from fastapi import HTTPException, status
 from pydantic import UUID4
-from sqlalchemy import Insert, Select, Update
+from sqlalchemy import Insert, Select, Update, func
 from api.database.database_config import primary_database as db
 from api.models.user_interaction_model import (
     UserProductInteractionCreate,
@@ -32,7 +32,6 @@ class LikeService:
         If the interaction doesn't exist, it will be created.
         If it exists, it will be updated.
         """
-        logger.info(f"👤User {user.id} setting like status for product {interaction_data.product_id}")
         # Check if the product exists
         query_product: Select = products_table.select().where(
             products_table.c.id == interaction_data.product_id
@@ -64,8 +63,10 @@ class LikeService:
         else:
             # Create new interaction
             query_insert_interaction: Insert = user_interactions_table.insert().values(user_id=user.id, **dict(interaction_data))
+            
             last_record_id: UUID4 = await self.db.execute(query_insert_interaction)
             result = await self.db.fetch_one(query=user_interactions_table.select().where(user_interactions_table.c.id == last_record_id))
+            
             interaction: UserProductInteractionInDB | None = UserProductInteractionInDB(**dict(result)) if result is not None else None
             
             try:    
@@ -87,15 +88,16 @@ class LikeService:
     async def get_user_likes(
         self,
         user_id: UUID4,
-        offset: int = 0
+        offset: int = 0,
+        limit: int = 50
     ) -> list[UserProductInteractionInDB]:
-        """Get all products liked by a user"""
+        """Get products liked by a user with pagination"""
         query_user_likes: Select = user_interactions_table.select().where(
             user_interactions_table.c.user_id == user_id,
             user_interactions_table.c.liked == True
-        ).offset(offset)
-        interactions = await self.db.fetch_all(query=query_user_likes)
+        ).offset(offset).limit(limit).order_by(user_interactions_table.c.created_at.desc())
         
+        interactions = await self.db.fetch_all(query=query_user_likes)
         return [UserProductInteractionInDB(**dict(interaction)) for interaction in interactions]
             
 
@@ -103,12 +105,14 @@ class LikeService:
         self,
         product_id: UUID4
     ) -> int:
-        """Get the number of likes for a product"""
-        query_product_likes_count: Select = user_interactions_table.select().where(
+        """Get the number of likes for a product using COUNT query"""
+        query_product_likes_count = user_interactions_table.select().with_only_columns(
+            func.count(user_interactions_table.c.id)
+        ).where(
             user_interactions_table.c.product_id == product_id, 
             user_interactions_table.c.liked == True
         )
-        result = await self.db.fetch_all(query=query_product_likes_count)
-        return len(result)
+        result = await self.db.fetch_one(query=query_product_likes_count)
+        return result[0] if result else 0
 
 like_service = LikeService(db=db.get_database())

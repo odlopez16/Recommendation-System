@@ -89,13 +89,9 @@ async def get_products(
         >>> GET /products?category=electronics&sort_by=price&order=desc
         >>> GET /products?search=laptop&sort_by=name&order=asc
     """
-    try:
-        # Verificar si la base de datos primaria está vacía
-        if await product_processor.get_products_from_primary_db() == []:
-            await product_processor.migrate_products()
-            
+    try:   
         # Obtener productos con filtros
-        products = await product_processor.get_products_from_primary_db(
+        products: list[Product] = await product_processor.get_products_from_primary_db(
             skip=skip, 
             limit=limit, 
             category=category,
@@ -107,22 +103,77 @@ async def get_products(
         # Verificar si se encontraron productos
         if not products:
             raise not_found_exception(detail="No se encontraron productos con los criterios especificados")
-            
+        
         return products
         
     except ValueError as ve:
         # Error de validación de datos
-        logger.warning(f"Error de validación: {str(ve)}")
+        logger.error(f"Error de validación")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ve)
+            detail="Error de validación"
         )
     except Exception as e:
         # Error interno del servidor
-        logger.error(f"Error al obtener productos: {str(e)}")
+        logger.error(f"Error al obtener productos")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al obtener los productos"
+        )
+
+@router.get("/popular", response_model=list[Product], status_code=status.HTTP_200_OK)
+async def get_popular_products(
+    current_user: UserInDB = Depends(get_current_user),
+    skip: int = Query(
+        default=0,
+        ge=0,
+        description="Número de productos a saltar para la paginación"
+    ),
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=100,
+        description="Número máximo de productos a retornar"
+    )
+) -> list[Product]:
+    """
+    Obtiene una lista de productos populares basada en la popularidad.
+
+    Este endpoint permite obtener productos populares, ordenados por popularidad.
+    Requiere autenticación.
+
+    Args:
+        current_user (UserInDB): Usuario autenticado que realiza la petición
+        skip (int): Número de productos a saltar para la paginación
+        limit (int): Número máximo de productos a retornar por página
+
+    Returns:
+        List[Product]: Lista de productos populares
+
+    Raises:
+        HTTPException(404): No se encontraron productos populares
+        HTTPException(500): Error interno del servidor durante la búsqueda
+
+    Ejemplo:
+        >>> GET /products/populars?limit=10&skip=0
+    """
+    try:
+        products: list[Product] = await product_processor.get_popular_products(
+            limit=limit,
+            skip=skip
+        )
+
+        # Verificar si se encontraron productos
+        if not products:
+            raise not_found_exception(detail="No se encontraron productos populares")
+
+        return products
+
+    except Exception as e:
+        logger.error(f"Error al obtener productos populares")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al obtener los productos populares"
         )
 
 @router.get("/{product_id}", response_model=Product, status_code=status.HTTP_200_OK)
@@ -158,7 +209,7 @@ async def get_product_by_id(
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"ID de producto inválido: {str(ve)}"
+            detail=f"ID de producto inválido"
         )
     except Exception as e:
         logger.error(f"Error al obtener producto")

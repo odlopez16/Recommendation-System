@@ -11,12 +11,14 @@ class CacheManager:
     """Gestor de caché centralizado con Redis y memoria local"""
     
     def __init__(self):
-        self._redis: Optional[redis.Redis] = None
+        self._redis: Optional[redis.Redis] = None  # type: ignore
         self._local_cache = {}
         
     async def get_redis(self) -> redis.Redis:
         if not self._redis:
             self._redis = redis.from_url("redis://localhost:6379", decode_responses=True)
+        if self._redis is None:
+            raise RuntimeError("Redis connection not initialized")
         return self._redis
     
     @lru_cache(maxsize=1000)
