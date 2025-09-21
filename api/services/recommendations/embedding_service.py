@@ -6,7 +6,7 @@ from pydantic import UUID4
 from api.models.user_interaction_model import UserProductInteractionInDB
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-import faiss
+import faiss #type: ignore
 from typing import Any, Optional
 from sqlalchemy import Insert, Select, desc, func
 from api.models.embedding_model import Embedding, EmbeddingIn
